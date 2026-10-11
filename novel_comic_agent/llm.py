@@ -11,7 +11,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import Any
 
-from minimuse.schema import Function, LLMResponse, Message, ToolCall
+from novel_comic_agent.schema import Function, LLMResponse, Message, ToolCall
 
 DeltaCallback = Callable[[str], None]
 

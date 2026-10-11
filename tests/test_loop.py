@@ -11,10 +11,10 @@ import asyncio
 import json
 from typing import Any
 
-from minimuse.agent import Agent
-from minimuse.llm import BaseLLM
-from minimuse.schema import Function, LLMResponse, ToolCall, ToolResult
-from minimuse.tools import BaseTool, ToolCollection
+from novel_comic_agent.agent import Agent
+from novel_comic_agent.llm import BaseLLM
+from novel_comic_agent.schema import Function, LLMResponse, ToolCall, ToolResult
+from novel_comic_agent.tools import BaseTool, ToolCollection
 
 
 class ScriptedLLM(BaseLLM):

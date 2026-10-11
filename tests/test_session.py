@@ -7,8 +7,8 @@ import json
 import re
 from pathlib import Path
 
-from minimuse.imagegen import BaseImageGen
-from minimuse.comic_tools import (
+from novel_comic_agent.imagegen import BaseImageGen
+from novel_comic_agent.comic_tools import (
     ComposePage,
     GeneratePanel,
     PlanLayout,
@@ -16,7 +16,7 @@ from minimuse.comic_tools import (
     SaveStoryboard,
     size_map_for,
 )
-from minimuse.session import (
+from novel_comic_agent.session import (
     HAPPY_ORDER,
     SessionState,
     SessionStore,

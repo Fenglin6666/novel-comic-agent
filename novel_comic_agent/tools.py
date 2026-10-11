@@ -13,7 +13,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from minimuse.schema import ToolResult
+from novel_comic_agent.schema import ToolResult
 
 
 class BaseTool(ABC, BaseModel):

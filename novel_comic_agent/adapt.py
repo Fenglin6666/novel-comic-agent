@@ -15,17 +15,17 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from minimuse.comic_tools import (
+from novel_comic_agent.comic_tools import (
     ComposePage,
     GeneratePanel,
     PlanLayout,
     SaveStoryboard,
     missing_panels,
 )
-from minimuse.imagegen import BaseImageGen
-from minimuse.llm import BaseLLM
-from minimuse.plan import _extract_json
-from minimuse.schema import Message, ToolResult
+from novel_comic_agent.imagegen import BaseImageGen
+from novel_comic_agent.llm import BaseLLM
+from novel_comic_agent.plan import _extract_json
+from novel_comic_agent.schema import Message, ToolResult
 
 CHUNK_MAX = 2400  # 单页原文块给编剧的上限（拍点负责剧情，原文负责细节）
 

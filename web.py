@@ -34,9 +34,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from comic import COMIC_PROMPT
-from minimuse.adapt import generate_pages
-from minimuse.agent import Agent
-from minimuse.comic_tools import (
+from novel_comic_agent.adapt import generate_pages
+from novel_comic_agent.agent import Agent
+from novel_comic_agent.comic_tools import (
     ComposePage,
     GeneratePanel,
     PlanLayout,
@@ -45,16 +45,16 @@ from minimuse.comic_tools import (
     size_map_for,
     storyboard_slug,
 )
-from minimuse.imagegen import OpenAIImageGen
-from minimuse.llm import OpenAILLM
-from minimuse.plan import (
+from novel_comic_agent.imagegen import OpenAIImageGen
+from novel_comic_agent.llm import OpenAILLM
+from novel_comic_agent.plan import (
     MAX_INPUT_CHARS,
     build_plan,
     chunk_text,
     cost_estimate,
     session_context,
 )
-from minimuse.refs import (
+from novel_comic_agent.refs import (
     decode_data_url,
     delete_ref,
     load_refs,
@@ -63,11 +63,11 @@ from minimuse.refs import (
     save_ref,
     update_desc,
 )
-from minimuse.session import SessionState, SessionStore, SessionTracker, resume_pipeline
-from minimuse.skills import apply_skill, choose_skill, list_skills, load_skill, save_skill
-from minimuse.tools import ToolCollection
-from minimuse.vision import describe_image
-from minimuse.webconfig import apply_config, public_view, save_config
+from novel_comic_agent.session import SessionState, SessionStore, SessionTracker, resume_pipeline
+from novel_comic_agent.skills import apply_skill, choose_skill, list_skills, load_skill, save_skill
+from novel_comic_agent.tools import ToolCollection
+from novel_comic_agent.vision import describe_image
+from novel_comic_agent.webconfig import apply_config, public_view, save_config
 
 OUT_DIR = (Path(__file__).parent / "comic_out").resolve()
 OUT_DIR.mkdir(parents=True, exist_ok=True)

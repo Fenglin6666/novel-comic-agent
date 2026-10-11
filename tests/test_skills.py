@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from minimuse import skills
+from novel_comic_agent import skills
 
 
 def _write(path, text):

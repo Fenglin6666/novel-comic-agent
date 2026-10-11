@@ -22,8 +22,8 @@ import os
 import sys
 from pathlib import Path
 
-from minimuse.agent import Agent
-from minimuse.comic_tools import (
+from novel_comic_agent.agent import Agent
+from novel_comic_agent.comic_tools import (
     ComposePage,
     GeneratePanel,
     PlanLayout,
@@ -31,11 +31,11 @@ from minimuse.comic_tools import (
     SaveStoryboard,
     size_map_for,
 )
-from minimuse.imagegen import OpenAIImageGen
-from minimuse.llm import OpenAILLM
-from minimuse.skills import apply_skill, choose_skill, list_skills
-from minimuse.refs import refs_prompt
-from minimuse.tools import ToolCollection
+from novel_comic_agent.imagegen import OpenAIImageGen
+from novel_comic_agent.llm import OpenAILLM
+from novel_comic_agent.skills import apply_skill, choose_skill, list_skills
+from novel_comic_agent.refs import refs_prompt
+from novel_comic_agent.tools import ToolCollection
 
 COMIC_PROMPT = """你是 novel-comic-agent，一个把想法变成一页原创漫画的 agent
 （版式分格，气泡台词由代码渲染）。

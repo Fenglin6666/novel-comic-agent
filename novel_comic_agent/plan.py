@@ -19,8 +19,8 @@ import re
 from pathlib import Path
 from typing import Any
 
-from minimuse.schema import Message
-from minimuse.skills import list_skills
+from novel_comic_agent.schema import Message
+from novel_comic_agent.skills import list_skills
 
 MAX_PLAN_PAGES = 20  # 单次生成的页数上限；整本小说分批，发后续文本继续追加
 SHORT_IDEA_CHARS = 1500  # 超过视为长文本（影响规划失败的确定性兜底）

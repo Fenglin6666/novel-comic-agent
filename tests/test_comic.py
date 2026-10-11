@@ -13,7 +13,7 @@ from typing import Any
 
 from PIL import Image as PILImage
 
-from minimuse.comic_tools import (
+from novel_comic_agent.comic_tools import (
     NO_TEXT_SUFFIX,
     PANEL_SIZES,
     SEEDREAM_SIZES,
@@ -28,8 +28,8 @@ from minimuse.comic_tools import (
     size_map_for,
     storyboard_slug,
 )
-from minimuse.imagegen import BaseImageGen
-from minimuse.tools import ToolCollection
+from novel_comic_agent.imagegen import BaseImageGen
+from novel_comic_agent.tools import ToolCollection
 
 
 def run(coro):

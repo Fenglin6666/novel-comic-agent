@@ -14,11 +14,12 @@ from typing import Any
 
 from PIL import Image as PILImage
 
-from minimuse.adapt import generate_pages, write_page
-from minimuse.comic_tools import SaveScript, missing_panels, storyboard_slug
-from minimuse.imagegen import BaseImageGen
-from minimuse.plan import _extract_json, build_plan, chunk_text, cost_estimate, normalize_plan
-from minimuse.schema import Message
+from novel_comic_agent.adapt import generate_pages, write_page
+from novel_comic_agent.comic_tools import SaveScript, missing_panels, storyboard_slug
+from novel_comic_agent.imagegen import BaseImageGen
+from novel_comic_agent.plan import (_extract_json, build_plan, chunk_text,
+                                    cost_estimate, normalize_plan)
+from novel_comic_agent.schema import Message
 
 
 def run(coro):

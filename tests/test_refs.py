@@ -6,7 +6,7 @@ import io
 
 from PIL import Image
 
-from minimuse.refs import (
+from novel_comic_agent.refs import (
     decode_data_url,
     delete_ref,
     load_refs,

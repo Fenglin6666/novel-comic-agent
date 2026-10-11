@@ -66,17 +66,17 @@ python -m venv .venv
 
 | 位置 | 职责 |
 |---|---|
-| minimuse/plan.py | 规划器：输入分析、页数、角色表、拍点、画师选择、成本估算 |
-| minimuse/adapt.py | 长文本逐页流水线：写分镜 → 版式 → 补缺格 → 合成（页幂等） |
-| minimuse/comic_tools.py | 漫画工具链：剧本 / 分镜 / 版式 / 生图 / 合成 |
-| minimuse/session.py | 会话状态机 + 事件流 + 断点恢复 |
-| minimuse/webconfig.py | 前端模型配置（密钥只落本机文件） |
+| novel_comic_agent/plan.py | 规划器：输入分析、页数、角色表、拍点、画师选择、成本估算 |
+| novel_comic_agent/adapt.py | 长文本逐页流水线：写分镜 → 版式 → 补缺格 → 合成（页幂等） |
+| novel_comic_agent/comic_tools.py | 漫画工具链：剧本 / 分镜 / 版式 / 生图 / 合成 |
+| novel_comic_agent/session.py | 会话状态机 + 事件流 + 断点恢复 |
+| novel_comic_agent/webconfig.py | 前端模型配置（密钥只落本机文件） |
 | web.py + web/ | FastAPI 服务（SSE 流式）+ Vue 3 单页界面（本地 vendor，零构建） |
 | tests/ | 45 个离线测试（模型替身只存在于测试文件内） |
 
 ```bash
 .\.venv\Scripts\python -m pytest -q
-.\.venv\Scripts\ruff check minimuse tests web.py comic.py
+.\.venv\Scripts\ruff check novel_comic_agent tests web.py comic.py
 ```
 
 ## License

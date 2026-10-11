@@ -12,9 +12,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from minimuse.llm import BaseLLM
-from minimuse.schema import Message, ToolResult
-from minimuse.tools import ToolCollection, safe_execute
+from novel_comic_agent.llm import BaseLLM
+from novel_comic_agent.schema import Message, ToolResult
+from novel_comic_agent.tools import ToolCollection, safe_execute
 
 Echo = Callable[[str], None]
 

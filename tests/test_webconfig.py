@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from minimuse.webconfig import apply_config, config_path, load_config, public_view, save_config
+from novel_comic_agent.webconfig import (apply_config, config_path, load_config,
+                                         public_view, save_config)
 
 
 def _env() -> dict[str, str]:

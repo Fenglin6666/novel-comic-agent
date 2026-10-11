@@ -23,10 +23,10 @@ from typing import Any
 
 from PIL import Image, ImageDraw
 
-from minimuse.imagegen import BaseImageGen, load_font, wrap_text
-from minimuse.refs import ref_files_for
-from minimuse.schema import ToolResult
-from minimuse.tools import BaseTool
+from novel_comic_agent.imagegen import BaseImageGen, load_font, wrap_text
+from novel_comic_agent.refs import ref_files_for
+from novel_comic_agent.schema import ToolResult
+from novel_comic_agent.tools import BaseTool
 
 NO_TEXT_SUFFIX = "，画面中不要出现任何文字、字母或对话气泡"
 MAX_PANELS = 8

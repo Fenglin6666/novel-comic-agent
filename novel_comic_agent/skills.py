@@ -16,10 +16,10 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from minimuse.schema import Message
+from novel_comic_agent.schema import Message
 
 if TYPE_CHECKING:
-    from minimuse.llm import BaseLLM
+    from novel_comic_agent.llm import BaseLLM
 
 _DEFAULT_DIR = Path(__file__).resolve().parent.parent / "skills"
 _SAFE_ID = re.compile(r"^[\w\u4e00-\u9fff][\w\u4e00-\u9fff-]*$")

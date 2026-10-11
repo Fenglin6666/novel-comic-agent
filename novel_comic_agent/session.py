@@ -23,9 +23,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from minimuse.comic_tools import ComposePage, GeneratePanel, missing_panels  # noqa: F401 — 再导出（旧导入路径兼容）
-from minimuse.imagegen import BaseImageGen
-from minimuse.schema import ToolResult
+from novel_comic_agent.comic_tools import ComposePage, GeneratePanel, missing_panels  # noqa: F401 — 再导出（旧导入路径兼容）
+from novel_comic_agent.imagegen import BaseImageGen
+from novel_comic_agent.schema import ToolResult
 
 
 class SessionState(str, Enum):

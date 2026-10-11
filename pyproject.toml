@@ -23,3 +23,6 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "B", "UP"]
+
+[tool.setuptools]
+packages = ["novel_comic_agent"]
