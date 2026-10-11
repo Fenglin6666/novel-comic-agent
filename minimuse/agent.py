@@ -18,7 +18,7 @@ from minimuse.tools import ToolCollection, safe_execute
 
 Echo = Callable[[str], None]
 
-SYSTEM_PROMPT = """You are mini-muse, a small task agent. You answer in the user's language.
+SYSTEM_PROMPT = """You are novel-comic-agent, a small task agent. You answer in the user's language.
 
 You can call tools for facts you cannot know or compute yourself. After a tool
 returns, read the result carefully and continue. When the task is done, reply

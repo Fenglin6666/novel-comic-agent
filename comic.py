@@ -1,4 +1,4 @@
-r"""comic-strip：把一个想法变成一页原创漫画（版式分格 + 气泡台词）。
+r"""novel-comic-agent：把一个想法变成一页原创漫画（版式分格 + 气泡台词）。
 
 最简单的用法（本地脚本自动带密钥，已 git-ignore）：
   .\run-deepseek.bat "你的想法"   主力：DeepSeek 编剧分镜 + OpenAI 兼容中转的作画模型
@@ -37,7 +37,7 @@ from minimuse.skills import apply_skill, choose_skill, list_skills
 from minimuse.refs import refs_prompt
 from minimuse.tools import ToolCollection
 
-COMIC_PROMPT = """你是 comic-strip，一个把想法变成一页原创漫画的 agent
+COMIC_PROMPT = """你是 novel-comic-agent，一个把想法变成一页原创漫画的 agent
 （版式分格，气泡台词由代码渲染）。
 
 工作流，严格按此顺序：

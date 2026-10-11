@@ -1,6 +1,6 @@
 <!doctype html>
 <!--
-  comic-strip 前端（Vue 3，本地文件零构建，vendor/vue.global.prod.js）：
+  novel-comic-agent 前端（Vue 3，本地文件零构建，vendor/vue.global.prod.js）：
   左侧菜单栏（新对话 / 作品入口 / 会话列表，可整体收起）+ 主区
   （新对话消息流 / 历史会话回放 / 作品页，三视图切换）。
   实时生成与历史会话回放（events.jsonl）走同一套消息渲染管线；
@@ -12,7 +12,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>comic-strip · 想法变一页漫画</title>
+<title>novel-comic-agent · 想法变一页漫画</title>
 <script>
   /* 主题在样式表生效前定好，避免亮色用户看到暗色闪烁 */
   try {
@@ -415,7 +415,7 @@
 <body>
 <div id="app" v-cloak>
   <aside class="side" :class="{open:sideOpen}">
-    <div class="brand"><span class="dot" :class="{live:liveRunning}"></span><b>comic-strip</b>
+    <div class="brand"><span class="dot" :class="{live:liveRunning}"></span><b>novel-comic-agent</b>
       <button class="icon-btn" title="模型配置" @click="openCfg">⚙️</button>
       <button class="icon-btn" :title="theme==='dark' ? '切换到浅色主题' : '切换到深色主题'"
               @click="toggleTheme">{{theme==='dark' ? '☀️' : '🌙'}}</button>

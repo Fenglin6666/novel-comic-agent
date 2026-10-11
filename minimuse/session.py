@@ -64,6 +64,13 @@ class SessionStore:
         <root>/<sid>/events.jsonl   事件流（一行一个 JSON）
     """
 
+    _last_ts: float = 0.0  # 类级单调钟：同一毫秒内连续写时保证 updated 严格递增
+
+    @staticmethod
+    def _now() -> float:
+        SessionStore._last_ts = max(SessionStore._last_ts + 0.001, time.time())
+        return SessionStore._last_ts
+
     def __init__(self, root: Path) -> None:
         """初始化存储根目录（sessions/）。
 
@@ -96,8 +103,8 @@ class SessionStore:
             "slug": "",
             "state": SessionState.CREATED.value,
             "error": "",
-            "created": time.time(),
-            "updated": time.time(),
+            "created": SessionStore._now(),
+            "updated": SessionStore._now(),
         }
         d = self._dir(sid)
         d.mkdir(parents=True, exist_ok=True)
@@ -127,7 +134,7 @@ class SessionStore:
         if snap is None:
             raise KeyError(f"no session {sid!r}")
         snap.update(fields)
-        snap["updated"] = time.time()
+        snap["updated"] = self._now()
         self._write_snapshot(self._dir(sid), snap)
         return snap
 

@@ -1,4 +1,4 @@
-r"""comic-strip 的 Web 界面。
+r"""novel-comic-agent 的 Web 界面。
 
 启动：.\run-web.ps1（自动带密钥并打开浏览器）
 或手动配好环境变量后：.\.venv\Scripts\python -m uvicorn web:app --port 8765
@@ -75,7 +75,7 @@ WEB_DIR = Path(__file__).parent / "web"
 STORE = SessionStore(OUT_DIR / "sessions")
 apply_config(OUT_DIR)  # 启动即应用前端保存的模型配置（覆盖在 run-*.ps1 之上）
 
-app = FastAPI(title="mini-muse comic-strip")
+app = FastAPI(title="novel-comic-agent")
 app.mount("/files", StaticFiles(directory=OUT_DIR), name="files")
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")  # 前端静态资源（本地 vue 等）
 

@@ -1,7 +1,7 @@
 [project]
-name = "mini-muse"
+name = "novel-comic-agent"
 version = "0.1.0"
-description = "A small comic-strip agent: one idea -> storyboard -> panels -> composed strip."
+description = "A small novel-comic-agent agent: one idea -> storyboard -> panels -> composed strip."
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.110",

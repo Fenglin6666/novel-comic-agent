@@ -1,4 +1,4 @@
-# mini-muse / comic-strip
+# novel-comic-agent
 
 一个把想法变成长篇条漫的 agent：文本模型规划分页，逐页写分镜，图片模型逐格作画，
 代码拼版渲染台词。一句话、零散想法、几段文字、整章小说、同一会话分次投喂——都收。
@@ -108,7 +108,7 @@ Web 界面：输入框旁下拉选择风格；点「＋风格」上传自己的 
 
 ## 对照 nanoMuse 阅读（学习来源）
 
-| mini-muse | nanoMuse |
+| novel-comic-agent | nanoMuse |
 |---|---|
 | minimuse/schema.py | nanomuse/schema.py |
 | minimuse/llm.py | nanomuse/llm/base.py + openai_chat.py |
