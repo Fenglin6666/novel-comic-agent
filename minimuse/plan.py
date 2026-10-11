@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import re
 from pathlib import Path
 from typing import Any
@@ -28,35 +27,79 @@ SHORT_IDEA_CHARS = 1500  # 超过视为长文本（影响规划失败的确定�
 MAX_INPUT_CHARS = 30000  # 规划入口的长度保护
 _PANELS_PER_PAGE_EST = 4  # 每页平均格数（1-8 槽的版式的经验均值）
 
+# 生图单价（元/张）：按模型名子串匹配；未命中用默认。
+# 字节 Seedream flash 官方价 ¥0.12/张。
+IMAGE_UNIT_PRICES = {"seedream": 0.12}
+DEFAULT_IMAGE_PRICE = 0.12
 
-def price_per_panel() -> float:
-    """单格生图单价（CNY）。中转/画师计价不同，用环境变量覆盖。"""
-    try:
-        return float(os.environ.get("MINIMUSE_PRICE_PANEL", "0.3"))
-    except ValueError:
-        return 0.3
+# 文本 token 估价（元/百万 token）：（输入, 输出）；按模型名子串匹配，未命中用默认档。
+TEXT_TOKEN_PRICES = {"deepseek": (2.0, 8.0), "glm": (2.0, 8.0), "zhipu": (2.0, 8.0)}
+_DEFAULT_TEXT_PRICE = (2.0, 8.0)
+
+# 文本用量的经验估算（token 数）：规划一次 + 每页一次分镜写作（含纠错余量）
+_PLAN_TOKENS = (4000, 1000)  # （输入，输出）
+_PER_PAGE_TOKENS = (3500, 1200)
+_RETRY_MARGIN = 1.3
 
 
-def cost_estimate(pages: int) -> dict[str, Any]:
-    """按页数估花费：图片是大头（格数 × 单价），文本调用可忽略。
+def image_unit_price(model: str) -> float:
+    """生图单价：按模型名匹配价格表。"""
+    m = (model or "").lower()
+    for key, price in IMAGE_UNIT_PRICES.items():
+        if key in m:
+            return price
+    return DEFAULT_IMAGE_PRICE
 
+
+def text_token_price(model: str) -> tuple[float, float]:
+    """文本 token 单价（输入/输出，元/百万 token）。"""
+    m = (model or "").lower()
+    for key, price in TEXT_TOKEN_PRICES.items():
+        if key in m:
+            return price
+    return _DEFAULT_TEXT_PRICE
+
+
+def cost_estimate(pages: int, image_model: str = "", text_model: str = "") -> dict[str, Any]:
+    """一页漫画的总成本 = 生图（格数 × 单价）+ 文本 token（规划 + 逐页分镜）。
+
+    Args:
+        pages: 规划的页数。
+        image_model: 生图模型名（决定每张单价，如 Seedream flash ¥0.12）。
+        text_model: 文本模型名（决定 token 单价）。
     Returns:
-        {pages, panels_est, panel_price, cny, lo, hi, note}；lo/hi 按每页
-        3-6 格的波动给出区间——规划只是预估，实际以 API 账单为准。
+        {pages, panels_est, image_unit, image_cny, text_cny, tokens_est, cny,
+         lo, hi, note}；lo/hi 按每页 3-6 格的波动给出——预估终究是预估，
+         实际以 API 账单为准。
     """
-    price = price_per_panel()
-    panels = max(1, pages) * _PANELS_PER_PAGE_EST
-    text_fee = 0.01
+    pages = max(1, pages)
+    unit = image_unit_price(image_model)
+    pin, pout = text_token_price(text_model)
+
+    panels = pages * _PANELS_PER_PAGE_EST
+    image_cny = panels * unit
+
+    tokens_in = _PLAN_TOKENS[0] + pages * _PER_PAGE_TOKENS[0] * _RETRY_MARGIN
+    tokens_out = _PLAN_TOKENS[1] + pages * _PER_PAGE_TOKENS[1] * _RETRY_MARGIN
+    text_cny = tokens_in / 1e6 * pin + tokens_out / 1e6 * pout
+
+    lo = pages * 3 * unit + text_cny
+    hi = pages * 6 * unit + text_cny
     return {
         "pages": pages,
         "panels_est": panels,
-        "panel_price": price,
-        "cny": round(panels * price + text_fee, 2),
-        "lo": round(max(1, pages) * 3 * price + text_fee, 2),
-        "hi": round(max(1, pages) * 6 * price + text_fee, 2),
+        "image_unit": unit,
+        "image_cny": round(image_cny, 2),
+        "text_cny": round(text_cny, 2),
+        "tokens_est": {"in": int(tokens_in), "out": int(tokens_out)},
+        "cny": round(image_cny + text_cny, 2),
+        "lo": round(lo, 2),
+        "hi": round(hi, 2),
         "note": (
-            f"按每格 ¥{price} 估算（环境变量 MINIMUSE_PRICE_PANEL 可改），"
-            "文本调用合计约 ¥0.01；实际以 API 账单为准"
+            f"生图：约 {panels} 格 × ¥{unit:.2f}/张 = ¥{image_cny:.2f}；"
+            f"文本：规划 + 逐页分镜约 {int(tokens_in) // 1000}K/"
+            f"{int(tokens_out) // 1000}K token ≈ ¥{text_cny:.2f}。"
+            "格数按每页 3-6 格浮动，实际以 API 账单为准"
         ),
     }
 

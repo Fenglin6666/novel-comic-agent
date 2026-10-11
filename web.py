@@ -642,7 +642,8 @@ async def make_plan(body: PlanRequest) -> dict[str, Any]:
     return {
         "sid": sid,
         "plan": plan,
-        "cost": cost_estimate(plan["pages"]),
+        "cost": cost_estimate(plan["pages"], image_model=os.environ.get("IMAGE_MODEL", ""),
+                       text_model=os.environ.get("MINIMUSE_MODEL", "")),
         "continuing": continuing,
         "had_sid": bool(body.sid),
         "pages_before": pages_before,

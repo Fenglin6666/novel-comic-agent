@@ -47,13 +47,22 @@ def test_chunk_text_falls_back_to_sentences():
     assert "".join(c.replace("\n\n", "") for c in chunks) == text
 
 
-def test_cost_estimate_scales_with_pages(monkeypatch):
-    monkeypatch.setenv("MINIMUSE_PRICE_PANEL", "0.5")
-    one, four = cost_estimate(1), cost_estimate(4)
+def test_cost_estimate_scales_and_sums_image_plus_text():
+    one, four = cost_estimate(1, image_model="doubao-seedream-5-0-flash-260915",
+                              text_model="deepseek-chat"), cost_estimate(
+        4, image_model="doubao-seedream-5-0-flash-260915", text_model="deepseek-chat")
     assert one["panels_est"] == 4
     assert four["panels_est"] == 16
     assert four["cny"] > one["cny"] > 0
     assert one["lo"] <= one["cny"] <= one["hi"]
+    # Seedream flash 官方价 ¥0.12/张：图像部分 = 格数 × 单价
+    assert one["image_unit"] == 0.12
+    assert abs(one["image_cny"] - 0.48) < 1e-9
+    # 总成本 = 生图 + 文本 token（文本不为零）
+    assert one["text_cny"] > 0
+    assert abs(one["cny"] - (one["image_cny"] + one["text_cny"])) < 1e-9
+    # 估算里的 token 数量随页数增长
+    assert four["tokens_est"]["in"] > one["tokens_est"]["in"]
 
 
 def test_extract_json_tolerates_fences_and_prose():
