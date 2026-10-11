@@ -267,9 +267,11 @@
   .chip .x { cursor:pointer; color:var(--faint); font-weight:700; padding:0 5px; }
   .chip .x:hover { color:var(--err); }
   .ref-add, .skill-add { all:unset; cursor:pointer; font-size:12px; color:var(--accent2);
-             padding:4px 10px; border:1px dashed var(--border); border-radius:999px;
-             transition:border-color .15s; }
-  .ref-add:hover, .skill-add:hover { border-color:var(--accent2); }
+             padding:4px 10px; border:1px dashed var(--border2); border-radius:999px;
+             transition:border-color .15s, background .15s, transform .08s; }
+  .ref-add:hover, .skill-add:hover { border-color:var(--accent2);
+             background:rgba(88,166,255,.08); }
+  .ref-add:active, .skill-add:active { transform:scale(.96); }
   .input-card { border:1px solid var(--border2); border-radius:16px; background:var(--panel);
                 box-shadow:0 2px 12px rgba(0,0,0,.06);
                 transition:border-color .15s, box-shadow .15s; }
@@ -323,11 +325,16 @@
                 font:13px inherit; outline:none; cursor:pointer; }
   .overlay .btns { display:flex; gap:8px; margin-top:12px; align-items:center; }
   .overlay button { all:unset; cursor:pointer; padding:8px 16px; border-radius:9px;
-        font-size:13px; border:1px solid var(--border2); color:var(--text); }
-  .overlay button:hover { background:var(--panel2); }
+        font-size:13px; border:1px solid var(--border2); color:var(--text);
+        transition:background .15s, filter .15s, transform .08s; }
+  .overlay button:hover:not(:disabled) { background:var(--panel2); }
+  .overlay button:active:not(:disabled) { transform:scale(.97); }
+  .overlay button:disabled { opacity:.55; cursor:default; }
   .overlay .primary { background:var(--text); color:var(--bg); border:none;
                       font-weight:600; margin-left:auto; }
-  .overlay .primary:disabled { background:#3a3a40; color:var(--faint); cursor:default; }
+  .overlay .primary:hover:not(:disabled) { background:var(--text); filter:brightness(1.12); }
+  .overlay .primary:disabled { background:#3a3a40; color:var(--faint); cursor:default;
+                               filter:none; }
   .overlay .fname { font-size:12px; color:var(--muted); overflow:hidden;
                     text-overflow:ellipsis; white-space:nowrap; max-width:140px; }
   /* 规划确认卡 */
@@ -596,13 +603,14 @@
   <div v-if="refModal" class="overlay" @click.self="refModal=false">
     <div class="card">
       <h3>上传角色参考图</h3>
-      <div class="tip">剧本会强制使用这些角色；作画时按名字垫图保持长相一致。描述留空由视觉模型自动补。</div>
+      <div class="tip">剧本会强制使用这些角色；作画时按名字垫图保持长相一致。描述留空由视觉模型自动补（可能需要十几秒）。大图会自动压缩。</div>
       <input type="text" v-model.trim="refName" placeholder="角色名，如：小满">
       <input type="text" v-model.trim="refDesc" placeholder="一句话外貌（可空，自动生成）">
       <div class="btns">
-        <button @click="$refs.refFile.click()">选择图片</button>
+        <button :disabled="refUploading" @click="$refs.refFile.click()">选择图片</button>
         <span class="fname">{{refFile?refFile.name:'未选择图片'}}</span>
-        <button class="primary" :disabled="!refName" @click="uploadRef">上传</button>
+        <button class="primary" :disabled="!refName || !refFile || refUploading"
+                @click="uploadRef">{{refUploading ? '上传中…' : '上传'}}</button>
       </div>
       <input type="file" ref="refFile" hidden accept="image/*" @change="onRefFile">
     </div>
@@ -751,6 +759,7 @@ const app = createApp({
       idea: "", skill: "",
       theme: "dark", sideOpen: true, viewImg: "",
       refModal: false, refName: "", refDesc: "", refFile: null,
+      refUploading: false,               // 参考图上传进行中（按钮禁用 + 防重复提交）
       renaming: "", renameText: "",       // 会话行内重命名
       planOffer: null, planning: false,   // 规划确认流：/api/plan 的结果挂在这
       cfgModal: false, cfgSaving: false,  // 模型配置弹窗
@@ -1172,23 +1181,48 @@ const app = createApp({
     /* ---------- 参考图上传 ---------- */
     openRefModal() { this.refModal = true; },
     onRefFile(e) { this.refFile = e.target.files[0] || null; e.target.value = ""; },
+    async _downscaleRef(file) {
+      // 大图先在本地压到 2048px 再传：上传体积小一个量级，服务器还会再转存 PNG
+      const MAX = 2048;
+      const readAsDataUrl = () => new Promise((ok, no) => { const fr = new FileReader();
+        fr.onload = () => ok(fr.result); fr.onerror = no; fr.readAsDataURL(file); });
+      let bmp = null;
+      try { bmp = await createImageBitmap(file); } catch { return readAsDataUrl(); }
+      try {
+        if (Math.max(bmp.width, bmp.height) <= MAX) return readAsDataUrl();
+        const scale = MAX / Math.max(bmp.width, bmp.height);
+        const cv = document.createElement("canvas");
+        cv.width = Math.max(1, Math.round(bmp.width * scale));
+        cv.height = Math.max(1, Math.round(bmp.height * scale));
+        cv.getContext("2d").drawImage(bmp, 0, 0, cv.width, cv.height);
+        return cv.toDataURL("image/jpeg", 0.92);
+      } finally { bmp.close && bmp.close(); }
+    },
     async uploadRef() {
+      if (this.refUploading) return;                 // 进行中忽略重复点击
       if (!this.refName) return;
       if (!this.refFile) return this.$refs.refFile.click();
-      const b64 = await new Promise((ok, no) => { const fr = new FileReader();
-        fr.onload = () => ok(fr.result); fr.onerror = no; fr.readAsDataURL(this.refFile); });
-      const res = await fetch("/api/refs", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: this.refName, image: b64, desc: this.refDesc }),
-      });
-      if (res.ok) {
-        const saved = await res.json().catch(() => ({}));
-        this.refModal = false; this.refName = ""; this.refDesc = ""; this.refFile = null;
-        this.loadRefs();
-        this.toast("已上传参考图：" + (saved.name || ""));
-      } else {
-        const d = await res.json().catch(() => ({}));
-        this.toast("上传失败：" + (d.detail || res.status), "err");
+      this.refUploading = true;
+      try {
+        const b64 = await this._downscaleRef(this.refFile);
+        const res = await fetch("/api/refs", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: this.refName, image: b64, desc: this.refDesc }),
+        });
+        if (res.ok) {
+          const saved = await res.json().catch(() => ({}));
+          this.refModal = false; this.refName = ""; this.refDesc = ""; this.refFile = null;
+          this.loadRefs();
+          this.toast("已上传参考图：" + (saved.name || ""));
+        } else {
+          const d = await res.json().catch(() => ({}));
+          this.toast("上传失败：" + (d.detail || res.status), "err");
+        }
+      } catch (err) {
+        this.toast("上传失败：" + (err.message === "Failed to fetch"
+          ? "无法连接服务" : err.message), "err");
+      } finally {
+        this.refUploading = false;
       }
     },
 
