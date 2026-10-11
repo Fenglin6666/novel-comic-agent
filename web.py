@@ -34,7 +34,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from comic import COMIC_PROMPT
-from novel_comic_agent.adapt import generate_pages
+from novel_comic_agent.adapt import generate_pages, remaining_work
 from novel_comic_agent.agent import Agent
 from novel_comic_agent.comic_tools import (
     ComposePage,
@@ -451,6 +451,11 @@ async def _generate_planned(
     beats = plan.get("outline") or []
     pages = work.get("pages") or []
     start_no = (pages[-1]["n"] if pages else (1 if base else 0)) + 1
+    # 本计划从第几页开始跑：首次执行时记入 work；失败恢复沿用——
+    # 拍点/原文块按 offset 切片，只跑真正缺的页，不会把前面的拍点当成后面的重跑
+    plan_start = work.get("plan_start_no") or start_no
+    offset = max(0, start_no - plan_start)
+    run_beats, run_chunks = remaining_work(beats, chunk_text(idea, len(beats)), offset)
 
     if base:
         script_data = _load_script_data(base)
@@ -497,14 +502,18 @@ async def _generate_planned(
             "skill": work.get("skill") or plan.get("skill", ""),
             "characters": script_data.get("characters", []),
             "pages": pages,
+            "plan_start_no": plan_start,
         },
     )
     STORE.set_state(sid, SessionState.SCRIPT)
-    end_no = start_no + len(beats) - 1
-    echo(f"📚 开始逐页生成：第 {start_no}-{end_no} 页（本次 {len(beats)} 页，每页约 30-60 秒/格）")
+    if not run_beats:
+        echo("✓ 规划内的页面均已完成，无需补页")
+        return "所有页均已存在"
+    end_no = start_no + len(run_beats) - 1
+    echo(f"📚 开始逐页生成：第 {start_no}-{end_no} 页"
+         f"（本次 {len(run_beats)} 页，每页约 30-60 秒/格）")
 
     digest_prefix = "；".join(f"第{p['n']}页：{p.get('beat', '')}" for p in pages[-10:])
-    chunks = chunk_text(idea, len(beats))
     llm = OpenAILLM()
     imagegen = OpenAIImageGen()
     sizes = size_map_for(imagegen.model)
@@ -522,8 +531,8 @@ async def _generate_planned(
     ok, msg, _ = await generate_pages(
         OUT_DIR,
         base=base,
-        beats=beats,
-        chunks=chunks,
+        beats=run_beats,
+        chunks=run_chunks,
         start_no=start_no,
         script=script_data,
         digest_prefix=digest_prefix,
@@ -620,7 +629,10 @@ async def make_plan(body: PlanRequest) -> dict[str, Any]:
         work = snap.get("work") or {}
         base = work.get("base") or snap.get("slug", "")
         pages_before = len(work.get("pages") or []) or (1 if base else 0)
-        STORE.update(sid, plan=plan, inputs=_append_input(snap, idea))
+        # 新一批拍点从"已完成页数+1"页起跑（恢复同一批时该值已在 work 里，不覆盖语义：
+        # pages_before 含本批已完成页时 plan_start 保持不变，见 _generate_planned）
+        STORE.update(sid, plan=plan, inputs=_append_input(snap, idea),
+                     work={**work, "plan_start_no": pages_before + 1})
     else:
         fresh = STORE.create(idea[:80], plan.get("skill", ""))
         sid = fresh["sid"]
@@ -680,24 +692,37 @@ async def generate(sid: str):
 
     idea = ((snap.get("inputs") or [{}])[0].get("text") or "").strip() or snap.get("idea", "")
     if plan.get("kind") == "short":
+        slug = snap.get("slug", "")
+        sb_exists = bool(slug and (OUT_DIR / "storyboards" / f"{slug}.json").is_file())
 
         async def on_done(answer: str) -> str:
             # 单页路径：agent 里产生的 slug 回填成 work 骨架（后续可续写成长篇）
             fresh = STORE.get(sid) or {}
-            slug = fresh.get("slug", "")
-            if slug:
+            new_slug = fresh.get("slug", "")
+            if new_slug:
                 STORE.update(
                     sid,
                     work={
-                        "base": slug,
+                        "base": new_slug,
                         "title": plan.get("title") or fresh.get("idea", ""),
                         "skill": plan.get("skill", ""),
                         "characters": plan.get("characters", []),
-                        "pages": [{"n": 1, "slug": slug, "beat": "", "state": "done"}],
+                        "pages": [{"n": 1, "slug": new_slug, "beat": "", "state": "done"}],
                     },
                 )
             return answer
 
+        if sb_exists:
+            # 分镜已在：确定性补格 + 重合成，不惊动 agent（恢复 = 接着上次，不是重来）
+            return _sse(_short_resume_worker(sid, slug, on_done=on_done))
+        # 没有分镜产物：只能整轮重跑；若剧本已存过，注入上下文让 agent 沿用而非另起
+        script_data = _load_script_data(slug) if slug else None
+        if script_data:
+            title = script_data.get("title", "")
+            idea = (f"【失败重试】此前已保存剧本 slug={slug}（标题《{title}》）。"
+                    "请沿用该标题重新 save_script（保持 slug 不变），先检查 "
+                    "storyboards/ 与 panels/ 已有产物，只补缺失的步骤，"
+                    "不要重做已完成的部分。\n\n" + idea)
         return _sse(_agent_worker(sid, idea, plan.get("skill", ""), on_done=on_done))
     return _sse(_planned_worker(sid, plan, idea))
 
@@ -729,6 +754,43 @@ async def run(idea: str, skill: str = ""):
     return _sse(_agent_worker(snap["sid"], idea, skill))
 
 
+def _short_resume_worker(sid: str, slug: str, on_done: Any = None):
+    """单页确定性恢复 worker：plan_layout → 补缺格 → 重合成（不经过 agent/LLM）。"""
+
+    async def worker(queue: asyncio.Queue[dict[str, Any] | None]) -> None:
+        echo = _echo_factory(sid, queue)
+        try:
+            echo(f"🔧 恢复单页 {slug}：只补缺失的格子，不重写剧本/分镜")
+            STORE.set_state(sid, SessionState.PANELS)
+            imagegen = OpenAIImageGen()
+            ok, msg = await resume_pipeline(
+                OUT_DIR, slug, imagegen, size_map_for(imagegen.model), echo
+            )
+            if ok:
+                if on_done is not None:
+                    msg = await on_done(msg) or msg
+                STORE.set_state(sid, SessionState.DONE)
+                STORE.append_event(sid, "done", {"answer": msg})
+                queue.put_nowait({"type": "done", "sid": sid, "answer": msg})
+            else:
+                STORE.set_state(sid, SessionState.FAILED, msg)
+                STORE.append_event(sid, "error", {"message": msg})
+                queue.put_nowait({"type": "error", "sid": sid, "message": msg})
+        except asyncio.CancelledError:
+            STORE.set_state(sid, SessionState.CANCELLED, "client disconnected")
+            raise
+        except Exception as exc:  # noqa: BLE001
+            msg = f"{type(exc).__name__}: {exc}"
+            STORE.set_state(sid, SessionState.FAILED, msg)
+            queue.put_nowait({"type": "error", "sid": sid, "message": msg})
+        finally:
+            global _busy  # noqa: PLW0603
+            _busy = False
+            queue.put_nowait(None)
+
+    return worker
+
+
 @app.get("/api/sessions/{sid}/resume")
 async def resume_session(sid: str):
     """从产物断点续跑一个会话（补缺格 → 重合成；不经过 LLM）。
@@ -749,41 +811,4 @@ async def resume_session(sid: str):
         raise HTTPException(status_code=409, detail="another comic is already generating")
     _busy = True
 
-    async def worker(queue: asyncio.Queue[dict[str, Any] | None]) -> None:
-        """断点续跑 worker：纯 pipeline，状态机同步推进。"""
-
-        def echo(text: str) -> None:
-            queue.put_nowait({"type": "log", "sid": sid, "text": text})
-            STORE.append_event(sid, "log", text)
-            for url in _png_urls(text):
-                queue.put_nowait({"type": "file", "sid": sid, "url": url})
-                STORE.append_event(sid, "file", url)
-
-        try:
-            echo(f"🔧 恢复会话 {sid}（slug={slug}）")
-            STORE.set_state(sid, SessionState.PANELS)
-            imagegen = OpenAIImageGen()
-            ok, msg = await resume_pipeline(
-                OUT_DIR, slug, imagegen, size_map_for(imagegen.model), echo
-            )
-            if ok:
-                STORE.set_state(sid, SessionState.DONE)
-                STORE.append_event(sid, "done", {"answer": msg})
-                queue.put_nowait({"type": "done", "sid": sid, "answer": msg})
-            else:
-                STORE.set_state(sid, SessionState.FAILED, msg)
-                STORE.append_event(sid, "error", {"message": msg})
-                queue.put_nowait({"type": "error", "sid": sid, "message": msg})
-        except asyncio.CancelledError:
-            STORE.set_state(sid, SessionState.CANCELLED, "client disconnected")
-            raise
-        except Exception as exc:  # noqa: BLE001
-            msg = f"{type(exc).__name__}: {exc}"
-            STORE.set_state(sid, SessionState.FAILED, msg)
-            queue.put_nowait({"type": "error", "sid": sid, "message": msg})
-        finally:
-            global _busy  # noqa: PLW0603
-            _busy = False
-            queue.put_nowait(None)
-
-    return _sse(worker)
+    return _sse(_short_resume_worker(sid, slug))

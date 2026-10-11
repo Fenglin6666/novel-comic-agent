@@ -66,6 +66,17 @@ prompt 写法（每格都要遵守）：
 - 远景或多人时，在 prompt 里重复该角色的标志性特征（跨页保持同一人）。"""
 
 
+def remaining_work(beats, chunks, offset):
+    """恢复/续跑时截取还没完成的部分。
+
+    本计划从 plan_start 页开始跑，start_no 是当前应跑的页码——
+    前面的页已完成（或属于上一批），把它们的拍点与原文块切掉，
+    避免恢复时把旧拍点当成新页重跑。
+    """
+    offset = max(0, offset)
+    return beats[offset:], chunks[offset:]
+
+
 def digest_text(prefix: str, beats: list[str], start_no: int) -> str:
     """前情提要：已完成页的摘要 + 本批之前页的拍点，一行串起（控制长度）。"""
     parts = [prefix.strip("；;")] if prefix.strip("；;") else []

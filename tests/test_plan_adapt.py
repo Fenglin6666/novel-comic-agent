@@ -188,6 +188,7 @@ class FlatImageGen(BaseImageGen):
     """写纯色 PNG 的本地替身（同 test_comic）。"""
 
     name = "flat"
+    model = "flat-image"  # web 层会用它选尺寸映射表
 
     def __init__(self) -> None:
         self.calls = 0
