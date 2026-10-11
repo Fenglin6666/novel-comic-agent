@@ -209,6 +209,12 @@
                          border-radius:0 12px 12px 12px; padding:10px 14px; }
   .msg.assistant .who { background:rgba(63,185,80,.12); border-color:rgba(63,185,80,.35); }
   .msg.error .who { background:rgba(248,81,73,.1); border-color:rgba(248,81,73,.35); }
+  .msg.user { flex-direction:row-reverse; }
+  .msg.user .body { background:rgba(88,166,255,.1); border:1px solid rgba(88,166,255,.3);
+                    border-radius:12px 12px 2px 12px; padding:9px 13px; }
+  .msg.user .who { background:rgba(88,166,255,.12); border-color:rgba(88,166,255,.35); }
+  .msg.plan .body { background:var(--panel2); }
+  .msg.plan .body pre { color:var(--muted); }
   .msg.error pre { color:var(--err); }
 
   /* 工具调用卡 */
@@ -544,6 +550,14 @@
           <div v-else-if="m.kind==='page'" class="row">
             <div class="final-page" @click="viewImg=m.url"><img :src="m.url">
               <div class="cap"><b>✓</b> 成品页 · 点击放大</div></div>
+          </div>
+          <div v-else-if="m.kind==='user'" class="row">
+            <div class="msg user"><div class="who">我</div>
+              <div class="body"><pre>{{m.text}}</pre></div></div>
+          </div>
+          <div v-else-if="m.kind==='plan'" class="row">
+            <div class="msg assistant plan"><div class="who">📋</div>
+              <div class="body"><pre>{{m.text}}</pre></div></div>
           </div>
           <div v-else-if="m.kind==='final'" class="row">
             <div class="msg assistant"><div class="who">✅</div>
@@ -983,10 +997,20 @@ const app = createApp({
       const offer = this.planOffer;
       if (!offer || this.liveRunning) return;
       this.planOffer = null;
+      const idea = offer.user_text || this.idea.trim();
       this.idea = "";
       const sid = offer.sid;
       this._startedIdea = offer.plan.title;
-      this.live = { sid, origin: sid, msgs: [], step: "created", running: true };
+      const kind = offer.plan.kind === "long" ? `连载 ${offer.plan.pages} 页` : "单页";
+      const maps = (offer.plan.cast_map || [])
+        .map(m => `${m.from} → ${m.to}`).join("、");
+      // 对话像聊天一样开场：用户消息 + 规划摘要先上屏，生成流接在后面
+      this.live = { sid, origin: sid, step: "created", running: true, msgs: [
+        { kind: "user", text: idea },
+        { kind: "plan",
+          text: `规划《${offer.plan.title}》· ${kind} · 画师 ${offer.plan.skill || "默认"}`
+                + (maps ? ` · 替换 ${maps}` : "") },
+      ] };
       this.view = { mode: "session", sid };
       this.loadSessions();
       this.closeSideOnMobile();
@@ -1092,6 +1116,15 @@ const app = createApp({
         } else if (ev.type === "file") {
           msgs.push(String(ev.data).includes("/pages/")
             ? { kind: "page", url: ev.data } : { kind: "img", url: ev.data });
+        } else if (ev.type === "user") {
+          msgs.push({ kind: "user", text: ev.data?.text || "" });
+        } else if (ev.type === "plan") {
+          const pl = ev.data || {};
+          const kind = pl.kind === "long" ? `连载 ${pl.pages} 页` : "单页";
+          const maps = (pl.cast_map || []).map(m => `${m.from} → ${m.to}`).join("、");
+          msgs.push({ kind: "plan",
+            text: `规划《${pl.title}》· ${kind} · 画师 ${pl.skill || "默认"}`
+                  + (maps ? ` · 替换 ${maps}` : "") });
         } else if (ev.type === "done") {
           msgs.push({ kind: "final", text: "✓ " + (ev.data?.answer || "") });
           advance("done");

@@ -650,10 +650,12 @@ async def make_plan(body: PlanRequest) -> dict[str, Any]:
                 "pages": [],
             },
         )
+    STORE.append_event(sid, "user", {"text": idea})   # 用户消息进对话存档（回放像聊天）
     STORE.append_event(sid, "plan", plan)
     return {
         "sid": sid,
         "plan": plan,
+        "user_text": idea,
         "cost": cost_estimate(plan["pages"], image_model=os.environ.get("IMAGE_MODEL", ""),
                        text_model=os.environ.get("MINIMUSE_MODEL", "")),
         "continuing": continuing,
