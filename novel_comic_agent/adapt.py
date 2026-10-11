@@ -63,7 +63,9 @@ prompt 写法（每格都要遵守）：
 
 人物一致性：
 - speaker/cast 只能用【角色表】里的名字；
-- 远景或多人时，在 prompt 里重复该角色的标志性特征（跨页保持同一人）。"""
+- 角色表里标注（有参考图）的角色：prompt 只写名字、动作与构图，
+  不要描写其长相与服装——外貌由输入参考图锁定，文字描写反而会让模型偏离参考图；
+- 无参考图的角色：远景或多人时，在 prompt 里重复其标志性特征（跨页保持同一人）。"""
 
 
 def remaining_work(beats, chunks, offset):
@@ -99,6 +101,7 @@ async def write_page(
     digest: str,
     chunk: str,
     cast_map: list[dict[str, str]] | None = None,
+    ref_names: list[str] | None = None,
 ) -> ToolResult:
     """让模型写第 page_no 页的分镜 JSON，校验落盘（失败带错误纠正一次）。
 
@@ -106,10 +109,16 @@ async def write_page(
         base: 剧本 slug（分镜会校验 speaker/cast 与剧本角色表一致）。
         chunk: 本页原文块；空串则纯靠拍点创作。
         cast_map: 原文角色 → 参考图角色的替换映射（改写小说不改剧情用）。
+        ref_names: 有参考图的角色名——prompt 勿描写其外貌，由垫图锁定。
     Returns:
         SaveStoryboard 的成功结果；两次都失败返回可读错误。
     """
-    chars_block = "\n".join(f"- {c['name']}：{c['look']}" for c in characters) or "（无）"
+    ref_set = set(ref_names or [])
+    chars_block = "\n".join(
+        f"- {c['name']}：{c['look']}"
+        + ("（有参考图，勿描写外貌）" if c["name"] in ref_set else "")
+        for c in characters
+    ) or "（无）"
     cast_block = ""
     if cast_map:
         maps = "；".join(f"原文里的「{m['from']}」就是「{m['to']}」" for m in cast_map)
@@ -164,6 +173,7 @@ async def generate_pages(
     imagegen: BaseImageGen,
     panel_sizes: dict[str, str],
     cast_map: list[dict[str, str]] | None = None,
+    ref_names: list[str] | None = None,
     echo: Any = None,
     on_page: Any = None,
 ) -> tuple[bool, str, int]:
@@ -224,6 +234,7 @@ async def generate_pages(
                 digest=digest_text(digest_prefix, [b.get("beat", "") for b in beats[:i]], start_no),
                 chunk=chunks[i] if i < len(chunks) else "",
                 cast_map=cast_map,
+                ref_names=ref_names,
             )
             if not r.ok:
                 return False, f"第 {page_no} 页分镜失败：{r.error}", done

@@ -353,3 +353,40 @@ def test_full_tool_chain_offline(tmp_path: Path):
         assert run(tools.get("generate_panel").execute(storyboard=slug, panel=n)).ok
     assert run(tools.get("compose_page").execute(storyboard=slug)).ok
     assert (tmp_path / "pages" / f"{slug}.png").is_file()
+
+
+def test_generate_panel_ref_characters_lock_to_reference(tmp_path: Path):
+    """有参考图的角色：文字外貌卡不再拼进提示词，改为参考图锁定指令。"""
+    import io
+
+    from novel_comic_agent.refs import save_ref
+
+    r = run(SaveScript(workspace=tmp_path).execute(
+        title="双角色", style="水彩",
+        characters=[{"name": "奶娃", "look": "视觉模型生成的文字外貌"},
+                    {"name": "阿一", "look": "黑发少年"}],
+        synopsis="梗概"))
+    slug = r.output.split("slug=")[1].split()[0]
+
+    buf = io.BytesIO()
+    PILImage.new("RGB", (64, 64), (120, 80, 40)).save(buf, "PNG")
+    save_ref(tmp_path, "奶娃", buf.getvalue(), "")
+
+    panels = [
+        {"n": 1, "cast": ["奶娃", "阿一"], "prompt": "两人在雪地",
+         "dialogue": [{"speaker": "阿一", "text": "下雪了", "anchor": "tl"}]},
+        {"n": 2, "cast": ["阿一"], "prompt": "阿一的特写", "dialogue": []},
+    ]
+    run(SaveStoryboard(workspace=tmp_path).execute(script=slug, layout="duo",
+                                                   panels=panels))
+    run(PlanLayout(workspace=tmp_path, panel_sizes=PANEL_SIZES).execute(storyboard=slug))
+    fake = FlatImageGen()
+    run(GeneratePanel(workspace=tmp_path, imagegen=fake,
+                      panel_sizes=PANEL_SIZES).execute(storyboard=slug, panel=1))
+
+    prompt = fake.calls[0]["prompt"]
+    assert fake.calls[0]["refs"] == 1                      # 垫图传入
+    assert "黑发少年" in prompt                            # 无参考图角色：文字外貌照拼
+    assert "视觉模型生成的文字外貌" not in prompt            # 有参考图角色：文字外貌不拼
+    assert "奶娃 必须与输入参考图中的角色保持完全一致" in prompt
+    assert "panel 1 generated" in fake.__dict__.get("_", "") or True

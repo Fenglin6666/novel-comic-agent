@@ -309,3 +309,14 @@ def test_write_page_injects_cast_map(tmp_path: Path):
     # 分镜落盘：数据里没有强约束 cast_map，但写盘的剧本角色表仍是参考图角色
     data = json.loads((tmp_path / "storyboards" / f"{base}-p01.json").read_text("utf-8"))
     assert [c["name"] for c in data["characters"]] == ["阿一"]
+
+
+def test_write_page_marks_ref_characters(tmp_path: Path):
+    base, script = _setup_workspace(tmp_path)
+    llm = FakeLLM([_storyboard_reply("标")])
+    run(write_page(
+        llm, tmp_path, base=base, page_no=1, title="连载测试", style_card="水墨",
+        characters=script["characters"], synopsis="梗概", beat="拍点", digest="",
+        chunk="原文", ref_names=["阿一"]))
+    assert "阿一：黑发少年（有参考图，勿描写外貌）" in llm.prompts[0]
+    assert "不要描写其长相与服装" in llm.prompts[0]

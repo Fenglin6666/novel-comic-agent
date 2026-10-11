@@ -55,6 +55,7 @@ from novel_comic_agent.plan import (
     session_context,
 )
 from novel_comic_agent.refs import (
+    ref_names_for,
     decode_data_url,
     delete_ref,
     load_refs,
@@ -537,6 +538,8 @@ async def _generate_planned(
         script=script_data,
         digest_prefix=digest_prefix,
         cast_map=plan.get("cast_map") or [],
+        ref_names=ref_names_for(OUT_DIR,
+                                [c["name"] for c in script_data.get("characters", [])]),
         llm=llm,
         imagegen=imagegen,
         panel_sizes=sizes,

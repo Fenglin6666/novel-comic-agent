@@ -24,7 +24,7 @@ from typing import Any
 from PIL import Image, ImageDraw
 
 from novel_comic_agent.imagegen import BaseImageGen, load_font, wrap_text
-from novel_comic_agent.refs import ref_files_for
+from novel_comic_agent.refs import ref_files_for, ref_names_for
 from novel_comic_agent.schema import ToolResult
 from novel_comic_agent.tools import BaseTool
 
@@ -676,15 +676,22 @@ class GeneratePanel(BaseTool):
             return ToolResult.fail(f"panel {panel!r} not found in '{slug}'; available panels: {ns}")
 
         chars = {c["name"]: c["look"] for c in data.get("characters", [])}
+        ref_names = ref_names_for(self.workspace, target.get("cast", []))
+        refs = ref_files_for(self.workspace, target.get("cast", []))
+        # 有参考图的角色：外貌完全由参考图锁定，文字外貌卡反而会把模型带偏——不拼。
         looks = "; ".join(
-            f"{name}: {chars[name]}" for name in target.get("cast", []) if name in chars
+            f"{name}: {chars[name]}" for name in target.get("cast", [])
+            if name in chars and name not in ref_names
         )
         parts = [data["style"]]
         if looks:
             parts.append(looks)
-        refs = ref_files_for(self.workspace, target.get("cast", []))
-        if refs:
-            parts.append("出场角色外貌严格参照输入参考图，保持同一人")
+        if ref_names:
+            named = "、".join(ref_names)
+            parts.append(
+                f"{named} 必须与输入参考图中的角色保持完全一致：同一人物，"
+                "脸型、发型、五官、服装、配色一律照搬参考图，不要按文字重新设计"
+            )
         parts.append(target["prompt"])
         prompt = "。".join(parts) + NO_TEXT_SUFFIX
         out = self.workspace / "panels" / f"{slug}_p{panel:02d}.png"

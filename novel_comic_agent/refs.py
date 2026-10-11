@@ -134,6 +134,19 @@ def delete_ref(workspace: Path, name: str) -> bool:
     return True
 
 
+def ref_names_for(workspace: Path, cast: list[str]) -> list[str]:
+    """cast 里有参考图的角色名（保持顺序、去重）——他们的外貌由参考图锁定，
+    提示词里不应再用文字描写（文字与参考图打架时，模型会偏离参考图）。"""
+    refs = load_refs(workspace)
+    out: list[str] = []
+    for name in cast:
+        name = (name or "").strip()
+        entry = refs.get(name) or refs.get(name.strip())
+        if entry and name not in out:
+            out.append(name)
+    return out
+
+
 def ref_files_for(workspace: Path, cast: list[str]) -> list[Path]:
     """按这一格的 cast 匹配参考图文件（名字精确匹配；同名去重）。
 
