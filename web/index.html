@@ -222,6 +222,8 @@
   details.call .st { flex:none; width:13px; text-align:center; font-size:11px; }
   details.call .st .spin { display:inline-block; }
   details.call .st.ok { color:var(--accent); }
+  details.call .st.fail { color:var(--err); font-weight:700; }
+  details.call .inner .r.rerr { color:var(--err); }
   details.call .tw { color:var(--accent2); font-weight:600; flex:none; }
   details.call .pv { color:var(--faint); overflow:hidden; text-overflow:ellipsis;
                      white-space:nowrap; flex:1; min-width:0; font-size:11.5px; }
@@ -519,15 +521,17 @@
           <div v-if="m.kind==='call'" class="row">
             <details class="call">
               <summary>
-                <span class="st" :class="{ok:m.done}">
-                  <span v-if="!m.done" class="spin"></span><template v-else>✓</template>
+                <span class="st" :class="{ok:m.done && !m.failed, fail:m.failed}">
+                  <span v-if="!m.done" class="spin"></span>
+                  <template v-else-if="m.failed">✗</template>
+                  <template v-else>✓</template>
                 </span>
                 <span class="tw">{{m.name}}</span>
                 <span class="pv">{{m.args}}</span>
                 <span class="chev">▶</span>
               </summary>
               <div class="inner">{{m.args}}
-                <div v-if="m.result" class="r">{{m.result}}</div>
+                <div v-if="m.result" class="r" :class="{rerr:m.failed}">{{m.result}}</div>
               </div>
             </details>
           </div>
@@ -843,7 +847,9 @@ const app = createApp({
       const last = list[list.length - 1];
       if (m.kind === "result" && last && last.kind === "call" && !last.done) {
         last.done = true;
-        last.result = m.text;
+        // agent 对失败结果的回显带 ✗ 前缀——卡片显示红色失败态，不再当成功折叠
+        last.failed = m.text.startsWith('✗' + " ");
+        last.result = m.text.replace('✗' + " ", "");
         return;
       }
       list.push(m);

@@ -136,7 +136,9 @@ class Agent:
                 if self.debug:
                     self._say(f"  ↳ {result.for_model()}")  # 全量返回，不截断
                 else:
-                    self._say(f"  ↳ {_preview(result.for_model())}")
+                    # 失败结果带 ✗ 标记：前端/日志能一眼区分，不会被当成成功折叠
+                    mark = "✗ " if not result.ok else ""
+                    self._say(f"  ↳ {mark}{_preview(result.for_model())}")
                 self.messages.append(Message.tool_result(result.for_model(), call.id, call.name))
                 if result.stop:
                     return await self._final_summary(result)
