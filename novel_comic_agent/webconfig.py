@@ -30,7 +30,11 @@ def config_path(workspace: Path) -> Path:
 
 
 def load_config(workspace: Path) -> dict[str, dict[str, str]]:
-    """读配置文件；坏 JSON/不存在返回空骨架（不抛，密钥文件坏了别拦启动）。"""
+    """读配置文件；坏 JSON/不存在返回空骨架（不抛，密钥文件坏了别拦启动）。
+
+    每组额外带 key_for：该密钥是为哪个端点保存的——换服务商未换密钥时
+    前端能精确提示"当前密钥属于旧服务商"。
+    """
     try:
         data = json.loads(config_path(workspace).read_text("utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -38,7 +42,8 @@ def load_config(workspace: Path) -> dict[str, dict[str, str]]:
     out: dict[str, dict[str, str]] = {}
     for group in ENV_MAP:
         raw = data.get(group) if isinstance(data.get(group), dict) else {}
-        out[group] = {k: str(raw[k]) for k in FIELDS if k in raw and raw[k]}
+        keep = (*FIELDS, "key_for")
+        out[group] = {k: str(raw[k]) for k in keep if k in raw and raw[k]}
     return out
 
 
@@ -71,11 +76,15 @@ def save_config(
     for group, patch in (("text", text), ("image", image)):
         if not patch:
             continue
+        new_base = str(patch.get("base_url") or "").strip()
         for field in FIELDS:
             val = str(patch.get(field) or "").strip()
             if val:
                 merged[group][field] = val
                 environ[ENV_MAP[group][field]] = val
+        # 密钥换了就记下它属于哪个端点——"换服务商没换密钥"是最常见的 401 陷阱
+        if str(patch.get("api_key") or "").strip():
+            merged[group]["key_for"] = new_base or merged[group].get("key_for", "")
     # 同 apply_config 的 Ark 水印处理：换到字节生图时自动关水印
     if "ark" in merged["image"].get("base_url", "").lower():
         environ.setdefault("IMAGE_WATERMARK", "false")
@@ -105,5 +114,6 @@ def public_view(workspace: Path, environ: MutableMapping[str, str] = os.environ)
             "model": env("model"),
             "has_key": bool(key),
             "key_hint": _mask(key) if key else "",
+            "key_for": saved[group].get("key_for", ""),
         }
     return out

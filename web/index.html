@@ -328,6 +328,11 @@
   .cfg-sec h4 { margin:0 0 4px; font-size:13px; display:flex; align-items:baseline; gap:6px; }
   .cfg-sec h4 i { font-style:normal; font-size:11px; color:var(--faint); font-weight:400; }
   .cfg-sec label { display:block; font-size:11px; color:var(--faint); margin:8px 0 3px; }
+  .key-meta { font-size:10.5px; color:var(--faint); font-family:var(--mono);
+              margin-top:3px; }
+  .cfg-warn { font-size:11px; color:var(--warn); background:rgba(210,153,34,.08);
+              border:1px solid rgba(210,153,34,.3); border-radius:7px;
+              padding:5px 9px; margin-top:4px; }
   .cfg-preset { width:100%; margin:2px 0 4px; padding:8px 10px; border:1px solid var(--border2);
                 border-radius:8px; background:var(--panel2); color:var(--text);
                 font:13px inherit; outline:none; cursor:pointer; }
@@ -692,6 +697,10 @@
         <label>API Key</label>
         <input type="password" v-model="cfg.text.api_key" autocomplete="off"
                :placeholder="cfg.text.has_key ? '已配置 ' + cfg.text.key_hint + '（留空保持不变）' : '未配置，填入密钥'">
+        <div v-if="cfg.text.has_key" class="key-meta">
+          生效密钥 {{cfg.text.key_hint}} · 为 {{hostOf(cfg.text.key_for) || '之前配置的端点'}} 保存</div>
+        <div v-if="cfg.text.has_key && cfg.text.warn_key" class="cfg-warn">
+          ⚠ 该密钥与上面的端点不属于同一家——更换服务商后必须填入新密钥，否则会 401。</div>
         <label>端点 Base URL</label>
         <input type="text" v-model="cfg.text.base_url" :placeholder="presetOf('text').base_url || 'https://api.deepseek.com/v1'">
         <label>模型名</label>
@@ -706,6 +715,10 @@
         <label>API Key</label>
         <input type="password" v-model="cfg.image.api_key" autocomplete="off"
                :placeholder="cfg.image.has_key ? '已配置 ' + cfg.image.key_hint + '（留空保持不变）' : '未配置，填入密钥'">
+        <div v-if="cfg.image.has_key" class="key-meta">
+          生效密钥 {{cfg.image.key_hint}} · 为 {{hostOf(cfg.image.key_for) || '之前配置的端点'}} 保存</div>
+        <div v-if="cfg.image.has_key && cfg.image.warn_key" class="cfg-warn">
+          ⚠ 该密钥与上面的端点不属于同一家——更换服务商后必须填入新密钥，否则会 401。</div>
         <label>端点 Base URL</label>
         <input type="text" v-model="cfg.image.base_url" :placeholder="presetOf('image').base_url || 'https://ark.cn-beijing.volces.com/api/v3'">
         <label>模型名</label>
@@ -1339,8 +1352,15 @@ const app = createApp({
           this.cfg[g].key_hint = r[g].key_hint;
           this.cfg[g].api_key = "";
           this.cfg[g].preset = this.guessPreset(g, r[g].base_url);
+          // 保存时的端点与现在的端点不一致 → 现有密钥很可能是旧服务商的
+          this.cfg[g].key_for = r[g].key_for || "";
+          this.cfg[g].warn_key = !!r[g].has_key
+            && !!r[g].key_for && r[g].key_for !== r[g].base_url;
         }
       } catch { this.toast("配置读取失败", "err"); }
+    },
+    hostOf(u) {
+      try { return new URL(u).hostname; } catch { return ""; }
     },
     guessPreset(group, base) {
       const b = (base || "").toLowerCase();

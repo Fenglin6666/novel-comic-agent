@@ -99,26 +99,28 @@ class OpenAIImageGen(BaseImageGen):
             RuntimeError: 端点既没返回 b64_json 也没返回 url。
         """
         kwargs: dict[str, Any] = {"model": self.model, "prompt": prompt, "size": size, "n": 1}
+        extra: dict[str, Any] = {}
         if self.watermark is not None:
-            kwargs["extra_body"] = {"watermark": self.watermark}
-        if ref_images:
-            # 垫图：字节 Seedream 在 generate 上吃 image 参数（base64 数据 URL）；
-            # OpenAI gpt-image 走 edit 端点（image 收文件元组）。按端点分派。
-            is_ark = "ark" in str(getattr(self.client, "base_url", "")).lower()
-            if is_ark or "seedream" in self.model.lower():
-                kwargs["image"] = [_data_url(p) for p in ref_images]
-                resp = await self.client.images.generate(**kwargs)
-            else:
-                files = [(p.name, p.read_bytes(), "image/png") for p in ref_images]
-                edit_kwargs: dict[str, Any] = {
-                    "model": self.model,
-                    "image": files,
-                    "prompt": prompt,
-                    "n": 1,
-                }
-                if self.watermark is not None:
-                    edit_kwargs["extra_body"] = {"watermark": self.watermark}
-                resp = await self.client.images.edit(**edit_kwargs)
+            extra["watermark"] = self.watermark
+        # 垫图按端点分派：字节方舟在 generate 上吃 image 参数（base64 数据 URL 列表），
+        # 但 OpenAI SDK 的 typed 方法不收 image——必须经 extra_body 透传，否则本地 TypeError；
+        # OpenAI 风格端点走 edit 端点（image 收文件元组）。
+        is_ark = "ark" in str(getattr(self.client, "base_url", "")).lower()
+        ark_ref = bool(ref_images) and (is_ark or "seedream" in self.model.lower())
+        if ark_ref:
+            extra["image"] = [_data_url(p) for p in ref_images]
+        if extra:
+            kwargs["extra_body"] = extra
+        if ref_images and not ark_ref:
+            edit_kwargs: dict[str, Any] = {
+                "model": self.model,
+                "image": [(p.name, p.read_bytes(), "image/png") for p in ref_images],
+                "prompt": prompt,
+                "n": 1,
+            }
+            if self.watermark is not None:
+                edit_kwargs["extra_body"] = {"watermark": self.watermark}
+            resp = await self.client.images.edit(**edit_kwargs)
         else:
             resp = await self.client.images.generate(**kwargs)
         item = resp.data[0]

@@ -712,6 +712,11 @@ async def generate(sid: str):
                         "pages": [{"n": 1, "slug": new_slug, "beat": "", "state": "done"}],
                     },
                 )
+                # agent 可能"跳过并说明"后正常收尾——没有成品页就不算完成，
+                # 标记失败让恢复按钮出现（补格是确定性的，不再烧一轮 agent）
+                if not (OUT_DIR / "pages" / f"{new_slug}.png").is_file():
+                    raise RuntimeError(
+                        "生成未完成：部分格子失败，未合成成品页——可点「恢复」补齐")
             return answer
 
         if sb_exists:
