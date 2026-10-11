@@ -1,0 +1,1344 @@
+<!doctype html>
+<!--
+  comic-strip 前端（Vue 3，本地文件零构建，vendor/vue.global.prod.js）：
+  左侧菜单栏（新对话 / 作品入口 / 会话列表，可整体收起）+ 主区
+  （新对话消息流 / 历史会话回放 / 作品页，三视图切换）。
+  实时生成与历史会话回放（events.jsonl）走同一套消息渲染管线；
+  生成在后台独立缓冲（切去别的页面不会中断烧钱的任务）。
+  与后端接口：GET /api/run（fetch 流式 SSE）、GET /api/sessions[/{sid}][/resume]、
+        /api/refs、/api/skills、/api/works、/static/*、/files/*。
+-->
+<html lang="zh" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>comic-strip · 想法变一页漫画</title>
+<script>
+  /* 主题在样式表生效前定好，避免亮色用户看到暗色闪烁 */
+  try {
+    var t = localStorage.getItem("cms-theme") ||
+      (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+    document.documentElement.dataset.theme = t;
+  } catch (e) {}
+</script>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2317171a'/%3E%3Cpath d='M16 6l2.6 6.9L26 16l-7.4 3.1L16 26l-2.6-6.9L6 16l7.4-3.1z' fill='%233fb950'/%3E%3C/svg%3E">
+<style>
+  :root, :root[data-theme="dark"] {
+    --bg:#0d0d0f; --panel:#151518; --panel2:#1c1c20; --panel3:#232329;
+    --border:#26262c; --border2:#33333b;
+    --text:#e8e8e4; --muted:#8b8b85; --faint:#5c5c57;
+    --text-soft:#cfcfc9; --text-soft2:#b9b9b3; --text-ok:#8fbf9f;
+    --accent:#3fb950; --accent2:#58a6ff; --err:#f85149; --warn:#d29922;
+    --on-accent:#08110a; --on-warn:#141414;
+    --badge-bg:#26262b; --badge-fg:#9a9a94;
+    --scroll-thumb:#2e2e35; --scroll-thumb-hover:#3c3c45;
+    --mono:ui-monospace,Consolas,"Cascadia Mono",monospace;
+    --shadow:0 12px 40px rgba(0,0,0,.5);
+  }
+  :root[data-theme="light"] {
+    --bg:#ffffff; --panel:#f7f7f5; --panel2:#ececea; --panel3:#e3e3e0;
+    --border:#e7e7e4; --border2:#d7d7d3;
+    --text:#1c1c1a; --muted:#6f6f6a; --faint:#a3a39c;
+    --text-soft:#454540; --text-soft2:#5c5c55; --text-ok:#1a7f37;
+    --accent:#1a7f37; --accent2:#0969da; --err:#cf222e; --warn:#9a6700;
+    --on-accent:#ffffff; --on-warn:#ffffff;
+    --badge-bg:#ececea; --badge-fg:#6f6f6a;
+    --scroll-thumb:#d4d4d0; --scroll-thumb-hover:#c2c2bd;
+    --shadow:0 12px 40px rgba(0,0,0,.12);
+  }
+  * { box-sizing:border-box; }
+  #app[v-cloak], [v-cloak] { display:none !important; }
+  html,body { height:100%; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:14px/1.65 system-ui,"Microsoft YaHei",sans-serif;
+         -webkit-font-smoothing:antialiased; }
+  ::selection { background:rgba(63,185,80,.28); }
+  ::-webkit-scrollbar { width:9px; height:9px; }
+  ::-webkit-scrollbar-thumb { background:var(--scroll-thumb); border-radius:8px;
+                              border:2px solid var(--bg); }
+  ::-webkit-scrollbar-thumb:hover { background:var(--scroll-thumb-hover); }
+  ::-webkit-scrollbar-track { background:transparent; }
+  button { font-family:inherit; }
+  #app { display:grid; grid-template-columns:auto 1fr; height:100vh; }
+  #app > main { grid-column:2; }  /* 显式列号：侧栏收起时第一列塌成 0，主区占满 */
+
+  /* ---------- 左侧菜单栏 ---------- */
+  .side { width:280px; background:var(--panel); border-right:1px solid var(--border);
+          display:flex; flex-direction:column; min-height:0; }
+  @media (min-width:881px) {   /* 桌面端收起 = 宽度平滑收拢；移动端走抽屉动画 */
+    .side { overflow:hidden; transition:width .22s ease, border-right-width .22s ease,
+            visibility .22s ease; }
+    .side > * { width:280px; box-sizing:border-box; }  /* 收起时内容不回流，被边缘裁切推走 */
+    .side:not(.open) { width:0; border-right-width:0; visibility:hidden; }
+    .scrim { display:none; }
+  }
+  .brand { display:flex; align-items:center; gap:6px; padding:16px 12px 12px 16px; }
+  .brand .dot { width:9px; height:9px; border-radius:50%; background:var(--faint); flex:none;
+                transition:background .3s; }
+  .brand .dot.live { background:var(--accent); box-shadow:0 0 8px var(--accent);
+                     animation:pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity:.45; } }
+  .brand b { font-size:16px; font-weight:700; letter-spacing:.2px; margin-right:auto; }
+  .icon-btn { all:unset; cursor:pointer; width:26px; height:26px; border-radius:7px; flex:none;
+              display:inline-flex; align-items:center; justify-content:center;
+              color:var(--muted); font-size:13px; }
+  .icon-btn:hover { background:var(--panel2); color:var(--text); }
+  .side-scroll { overflow:auto; flex:1; min-height:0; padding:0 5px 20px; }
+  /* Codex 风菜单项：扁平连续列表，单色线性图标，右侧灰色元信息；
+     平时无底色，只有 hover/选中才垫浅底 */
+  .menu-item { all:unset; cursor:pointer; display:flex; align-items:center; gap:10px;
+               margin:1px 0; padding:9px 12px; border-radius:8px;
+               width:100%; box-sizing:border-box;  /* all:unset 会重置全局的 border-box，需补回 */
+               font-size:13.5px; color:var(--text); }  /* button 的 width:auto 是收缩到内容，必须显式撑满 */
+  .menu-item:hover { background:var(--panel2); }
+  .menu-item.active { background:var(--panel2); }
+  .menu-item svg { flex:none; width:16px; height:16px; color:var(--muted); }
+  .menu-item .meta { margin-left:auto; font-size:11px; color:var(--faint); }
+  .sec { margin-top:18px; }
+  .sec h3 { font-size:12px; color:var(--faint); font-weight:500; margin:0 0 4px 12px; }
+  .sess { display:flex; align-items:center; gap:8px; padding:9px 12px; border-radius:8px;
+          font-size:12.5px; cursor:pointer;
+          transition:background .12s; }
+  .sess:hover { background:var(--panel2); }
+  .sess.active { background:var(--panel2); }
+  .sess .idea { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
+                white-space:nowrap; }
+  .sess .tm { flex:none; font:10px var(--mono); color:var(--faint); }
+  .sess .rename-btn { flex:none; width:15px; text-align:center; font-size:11px;
+                      color:var(--faint); cursor:pointer; opacity:0;
+                      transition:opacity .12s, color .12s; }
+  .sess:hover .rename-btn, .sess.active .rename-btn { opacity:1; }
+  .sess .rename-btn:hover { color:var(--accent2); }
+  .ren-input { flex:1; min-width:0; background:var(--bg); border:1px solid var(--accent2);
+               border-radius:6px; color:var(--text); font:12.5px/1.5 inherit;
+               padding:1px 7px; outline:none; }
+  .badge { flex:none; padding:1px 8px; border-radius:999px; font-size:10.5px; font-weight:600;
+           background:var(--badge-bg); color:var(--badge-fg); font-family:var(--mono); }
+  .badge.done { background:#12261a; color:var(--accent); }
+  .badge.failed { background:#2d1416; color:var(--err); }
+  .badge.cancelled { background:#2b2313; color:var(--warn); }
+  .badge.panels,.badge.compose,.badge.storyboard,.badge.layout,.badge.script,.badge.style,
+  .badge.created { background:#12233a; color:var(--accent2); }
+  .badge.running { background:#12261a; color:var(--accent); animation:pulse 1.6s infinite; }
+  /* ---------- 作品页 ---------- */
+  .works-page { flex:1; overflow:auto; min-height:0; padding:20px 8% 34px; }
+  .works-head { display:flex; align-items:baseline; gap:10px; margin:0 0 16px; }
+  .works-head h2 { font-size:15px; margin:0; font-weight:650; }
+  .works-head .n { font:11px var(--mono); color:var(--faint); }
+  .wgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:14px; }
+  .wcard { border:1px solid var(--border); border-radius:12px; overflow:hidden;
+           cursor:zoom-in; background:var(--panel); transition:transform .15s,
+           border-color .15s; }
+  .wcard:hover { border-color:var(--border2); transform:translateY(-2px); }
+  .wcard img { width:100%; aspect-ratio:1080/1720; object-fit:cover; display:block; }
+  .wcard .wmeta { padding:8px 11px 10px; }
+  .wcard .t { font-size:12.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .wcard .d { font:10.5px var(--mono); color:var(--faint); margin-top:2px;
+              overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .empty { color:var(--faint); font-size:12px; padding:4px 8px; }
+
+  /* ---------- 主区 ---------- */
+  .main { display:flex; flex-direction:column; min-width:0; min-height:0; }
+  .topbar { display:flex; align-items:center; gap:12px; padding:10px 18px;
+            border-bottom:1px solid var(--border); background:var(--panel); }
+  .menu-btn { all:unset; cursor:pointer; width:26px; height:26px; border-radius:6px;
+              display:inline-flex; align-items:center; justify-content:center; font-size:14px;
+              color:var(--muted); flex:none; }
+  .menu-btn:hover { background:var(--panel2); color:var(--text); }
+  .topbar .title { font-size:13px; color:var(--muted); min-width:0;
+                   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .steps { display:flex; gap:2px; align-items:center; margin-left:auto; overflow-x:auto;
+           scrollbar-width:none; }
+  .steps::-webkit-scrollbar { display:none; }
+  .step { display:flex; align-items:center; gap:5px; font-size:11px; color:var(--faint);
+          font-family:var(--mono); white-space:nowrap; transition:color .2s; }
+  .step .b { width:7px; height:7px; border-radius:50%; background:var(--border2);
+             transition:background .2s; }
+  .step.done { color:var(--accent); } .step.done .b { background:var(--accent); }
+  .step.now { color:var(--accent2); }
+  .step.now .b { background:var(--accent2); box-shadow:0 0 6px var(--accent2);
+                 animation:pulse 1.4s infinite; }
+  .step-sep { color:var(--border); font-size:10px; }
+  .resume-btn { all:unset; cursor:pointer; flex:none; margin-left:10px; padding:5px 13px;
+                border-radius:8px; background:var(--warn); color:var(--on-warn); font-size:12px;
+                font-weight:700; }
+  .resume-btn:hover { filter:brightness(1.1); }
+  .resume-btn:disabled { background:#3a3a40; color:var(--muted); cursor:default; filter:none; }
+
+  .col { width:100%; max-width:880px; margin:0 auto; }
+
+  .feed { flex:1; overflow:auto; min-height:0; padding:20px 8% 26px; }
+  .feed-col { display:flex; flex-direction:column; gap:2px; }
+
+  .banner-row { padding:10px 8% 0; }
+  /* 后台生成提示条 */
+  .live-banner { z-index:5; display:flex; align-items:center; gap:9px; padding:8px 14px;
+                 border-radius:10px; border:1px solid rgba(63,185,80,.35);
+                 background:rgba(63,185,80,.08); color:var(--accent); font-size:12.5px;
+                 cursor:pointer; backdrop-filter:blur(6px); }
+  .live-banner:hover { background:rgba(63,185,80,.14); }
+  .live-banner .spin { flex:none; }
+
+  /* 空态首屏 */
+  .hero { margin:auto; padding:40px 10px; text-align:center; }
+  .hero .logo { font-size:34px; line-height:1; margin-bottom:16px; }
+  .hero h1 { font-size:20px; font-weight:650; margin:0 0 8px; letter-spacing:.3px; }
+  .hero h1 em { font-style:normal; color:var(--accent); }
+  .hero p { color:var(--muted); font-size:13px; margin:0 auto 22px; max-width:420px; }
+  .hero .ex { display:flex; flex-wrap:wrap; gap:8px; justify-content:center; }
+  .hero .ex button { all:unset; cursor:pointer; font-size:12.5px; color:var(--muted);
+                     border:1px solid var(--border); border-radius:999px; padding:7px 14px;
+                     transition:all .15s; }
+  .hero .ex button:hover { color:var(--text); border-color:var(--border2);
+                           background:var(--panel2); }
+  .hero .ex button b { color:var(--accent2); font-weight:600; margin-right:4px; }
+
+  /* 消息行 */
+  .row { margin:0 0 8px; animation:rise .18s ease-out; }
+  @keyframes rise { from { opacity:0; transform:translateY(4px); } }
+  .msg { display:flex; gap:10px; }
+  .msg .who { flex:none; width:26px; height:26px; border-radius:8px; background:var(--panel2);
+              border:1px solid var(--border); display:flex; align-items:center;
+              justify-content:center; font-size:13px; }
+  .msg .body { flex:1; min-width:0; padding-top:3px; }
+  .msg pre { margin:0; font:12px/1.7 var(--mono); color:var(--text-soft);
+             white-space:pre-wrap; word-break:break-word; }
+  .msg.sys .who { font-size:12px; color:var(--muted); }
+  .msg.sys pre { color:var(--muted); }
+  .msg.assistant .body { background:var(--panel2); border:1px solid var(--border);
+                         border-radius:0 12px 12px 12px; padding:10px 14px; }
+  .msg.assistant .who { background:rgba(63,185,80,.12); border-color:rgba(63,185,80,.35); }
+  .msg.error .who { background:rgba(248,81,73,.1); border-color:rgba(248,81,73,.35); }
+  .msg.error pre { color:var(--err); }
+
+  /* 工具调用卡 */
+  details.call { border:1px solid var(--border); border-radius:10px; background:var(--panel);
+                 overflow:hidden; transition:border-color .15s; }
+  details.call:hover { border-color:var(--border2); }
+  details.call summary { list-style:none; cursor:pointer; padding:8px 12px; display:flex;
+                         gap:8px; align-items:center; font-family:var(--mono);
+                         font-size:12.5px; min-width:0; }
+  details.call summary::-webkit-details-marker { display:none; }
+  details.call .st { flex:none; width:13px; text-align:center; font-size:11px; }
+  details.call .st .spin { display:inline-block; }
+  details.call .st.ok { color:var(--accent); }
+  details.call .tw { color:var(--accent2); font-weight:600; flex:none; }
+  details.call .pv { color:var(--faint); overflow:hidden; text-overflow:ellipsis;
+                     white-space:nowrap; flex:1; min-width:0; font-size:11.5px; }
+  details.call .chev { color:var(--faint); font-size:10px; flex:none;
+                       transition:transform .15s; }
+  details.call[open] .chev { transform:rotate(90deg); }
+  details.call .inner { padding:8px 12px 10px; font:11.5px/1.7 var(--mono); color:var(--text-soft2);
+                        white-space:pre-wrap; word-break:break-word;
+                        border-top:1px solid var(--border); }
+  details.call .inner .r { color:var(--text-ok); margin-top:6px; padding-top:6px;
+                           border-top:1px dashed var(--border); max-height:220px;
+                           overflow:auto; }
+  .spin { width:11px; height:11px; border:2px solid var(--border2);
+          border-top-color:var(--accent2); border-radius:50%; display:inline-block;
+          animation:rot .7s linear infinite; }
+  @keyframes rot { to { transform:rotate(360deg); } }
+
+  .thumbs { display:flex; flex-wrap:wrap; gap:8px; padding-left:36px; }
+  .thumbs img { width:132px; border-radius:8px; border:1px solid var(--border);
+                cursor:zoom-in; transition:border-color .15s; }
+  .thumbs img:hover { border-color:var(--border2); }
+  .final-page { border:1px solid var(--border); border-radius:12px; overflow:hidden;
+                max-width:520px; cursor:zoom-in; background:var(--panel);
+                transition:border-color .15s; margin-left:36px; }
+  .final-page:hover { border-color:var(--border2); }
+  .final-page img { width:100%; display:block; }
+  .final-page .cap { font:11px var(--mono); color:var(--muted); padding:7px 11px;
+                     border-top:1px solid var(--border); display:flex; gap:6px;
+                     align-items:center; }
+  .final-page .cap b { color:var(--accent); font-weight:600; }
+
+  /* ---------- 输入区：一个独立的悬浮输入框，无外围面板 ---------- */
+  .composer { padding:10px 8% 16px; }
+  .ref-bar { display:flex; gap:8px; flex-wrap:wrap; align-items:center;
+             padding:12px 14px 0; }
+  .chip { display:inline-flex; align-items:center; gap:7px; border:1px solid var(--border);
+          border-radius:999px; padding:3px 6px 3px 4px; font-size:12px;
+          background:var(--panel2); }
+  .chip img { width:26px; height:26px; border-radius:50%; object-fit:cover;
+              border:1px solid var(--border); }
+  .chip .d { max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+             color:var(--muted); }
+  .chip .x { cursor:pointer; color:var(--faint); font-weight:700; padding:0 5px; }
+  .chip .x:hover { color:var(--err); }
+  .ref-add, .skill-add { all:unset; cursor:pointer; font-size:12px; color:var(--accent2);
+             padding:4px 10px; border:1px dashed var(--border); border-radius:999px;
+             transition:border-color .15s; }
+  .ref-add:hover, .skill-add:hover { border-color:var(--accent2); }
+  .input-card { border:1px solid var(--border2); border-radius:16px; background:var(--panel);
+                box-shadow:0 2px 12px rgba(0,0,0,.06);
+                transition:border-color .15s, box-shadow .15s; }
+  .input-card:focus-within { border-color:var(--accent); box-shadow:0 0 0 3px rgba(63,185,80,.1); }
+  #idea { width:100%; background:transparent; border:none; outline:none; resize:none;
+          color:var(--text); font:14px/1.6 inherit; padding:12px 14px 4px; min-height:56px;
+          max-height:200px; }
+  #idea::placeholder { color:var(--faint); }
+  .input-row { display:flex; gap:8px; align-items:center; padding:6px 10px 10px; }
+  #skill { font-size:12.5px; padding:6px 26px 6px 10px; border:1px solid transparent;
+           border-radius:8px; background:var(--panel2) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='7' viewBox='0 0 10 7'><path d='M1 1l4 4 4-4' fill='none' stroke='%238f8f89' stroke-width='1.6' stroke-linecap='round'/></svg>") no-repeat right 9px center;
+           appearance:none; -webkit-appearance:none; outline:none; font-family:inherit;
+           color:var(--text); cursor:pointer; max-width:220px; }
+  #skill:disabled { color:var(--muted); cursor:default; }
+  .stop-btn { all:unset; cursor:pointer; flex:none; font-size:12.5px; font-weight:600;
+              padding:7px 14px; border-radius:8px; border:1px solid rgba(248,81,73,.4);
+              color:var(--err); }
+  .stop-btn:hover { background:rgba(248,81,73,.1); }
+  #go { margin-left:auto; font-size:13px; padding:8px 22px; border:none; border-radius:9px;
+        background:var(--accent); color:var(--on-accent); cursor:pointer; font-weight:650;
+        transition:filter .15s; }
+  #go:hover:not(:disabled) { filter:brightness(1.12); }
+  #go:disabled { background:#2c2c33; color:var(--faint); cursor:default; }
+  .hint { font-size:11px; color:var(--faint); margin-top:7px; font-family:var(--mono);
+          text-align:center; }
+  .hint kbd { border:1px solid var(--border2); border-bottom-width:2px; border-radius:4px;
+              padding:0 4px; font-family:var(--mono); font-size:10px; color:var(--muted); }
+
+  /* 弹层 / 大图 / Toast */
+  .overlay { position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex;
+             align-items:center; justify-content:center; z-index:30; }
+  .overlay .card { width:min(420px,92vw); background:var(--panel); border:1px solid
+                   var(--border2); border-radius:14px; padding:18px; box-shadow:var(--shadow);
+                   animation:pop .16s ease-out; }
+  @keyframes pop { from { opacity:0; transform:scale(.96); } }
+  .overlay h3 { margin:0 0 4px; font-size:14px; }
+  .overlay .tip { font-size:12px; color:var(--muted); margin-bottom:12px; }
+  .overlay input[type=text], .overlay input[type=password] { width:100%; margin-bottom:8px;
+        padding:9px 12px; border:1px solid var(--border); border-radius:9px;
+        background:var(--panel2); color:var(--text); outline:none; font:13px inherit; }
+  .overlay input[type=text]:focus, .overlay input[type=password]:focus {
+        border-color:var(--border2); }
+  /* 模型配置弹窗 */
+  .cfg-card { width:min(480px,94vw); max-height:88vh; overflow:auto; }
+  .cfg-sec { margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--border); }
+  .cfg-sec h4 { margin:0 0 4px; font-size:13px; display:flex; align-items:baseline; gap:6px; }
+  .cfg-sec h4 i { font-style:normal; font-size:11px; color:var(--faint); font-weight:400; }
+  .cfg-sec label { display:block; font-size:11px; color:var(--faint); margin:8px 0 3px; }
+  .cfg-preset { width:100%; margin:2px 0 4px; padding:8px 10px; border:1px solid var(--border2);
+                border-radius:8px; background:var(--panel2); color:var(--text);
+                font:13px inherit; outline:none; cursor:pointer; }
+  .overlay .btns { display:flex; gap:8px; margin-top:12px; align-items:center; }
+  .overlay button { all:unset; cursor:pointer; padding:8px 16px; border-radius:9px;
+        font-size:13px; border:1px solid var(--border2); color:var(--text); }
+  .overlay button:hover { background:var(--panel2); }
+  .overlay .primary { background:var(--text); color:var(--bg); border:none;
+                      font-weight:600; margin-left:auto; }
+  .overlay .primary:disabled { background:#3a3a40; color:var(--faint); cursor:default; }
+  .overlay .fname { font-size:12px; color:var(--muted); overflow:hidden;
+                    text-overflow:ellipsis; white-space:nowrap; max-width:140px; }
+  /* 规划确认卡 */
+  .plan-card { width:min(540px,94vw); max-height:88vh; overflow:auto; }
+  .plan-card h3 { display:flex; align-items:center; gap:8px; }
+  .plan-card .pt { font-size:12.5px; color:var(--muted); margin-bottom:12px;
+                   padding-bottom:10px; border-bottom:1px solid var(--border); }
+  .plan-card .cont { font-size:12px; color:var(--accent); background:rgba(63,185,80,.08);
+                     border:1px solid rgba(63,185,80,.3); border-radius:8px;
+                     padding:7px 10px; margin-bottom:10px; }
+  .plan-card .cont.new { color:var(--accent2); background:rgba(88,166,255,.07);
+                         border-color:rgba(88,166,255,.3); }
+  .plan-card .prow { display:flex; gap:10px; font-size:12.5px; margin-bottom:8px;
+                     align-items:baseline; }
+  .plan-card .prow b { flex:none; width:34px; color:var(--faint); font-weight:600;
+                       font-size:11.5px; }
+  .plan-card .pchars { display:flex; flex-wrap:wrap; gap:6px; }
+  .plan-card .pmap { display:flex; flex-wrap:wrap; gap:12px; font-size:12px;
+                     color:var(--muted); }
+  .plan-card .pmap i { font-style:normal; color:var(--accent); }
+  .plan-card .pmap b { color:var(--accent2); font-weight:600; }
+  .plan-card .pchip { border:1px solid var(--border2); border-radius:999px;
+                      padding:1px 9px; font-size:11.5px; cursor:help; }
+  .plan-card .dimm { color:var(--faint); }
+  .plan-card .cost { color:var(--warn); font-weight:650; }
+  .plan-card .cost i { font-style:normal; font-weight:400; color:var(--muted);
+                       font-size:11.5px; }
+  .plan-card .pnote { font-size:11px; color:var(--faint); margin:2px 0 6px 44px;
+                      font-family:var(--mono); }
+  .plan-card .poutline { margin:8px 0 2px; border:1px solid var(--border);
+                         border-radius:9px; }
+  .plan-card .poutline summary { cursor:pointer; list-style:none; padding:8px 12px;
+                                 font-size:12.5px; color:var(--accent2); }
+  .plan-card .poutline summary::-webkit-details-marker { display:none; }
+  .plan-card .poutline .beat { display:flex; gap:8px; padding:5px 12px; font-size:12px;
+                               border-top:1px solid var(--border); align-items:baseline; }
+  .plan-card .poutline .beat b { flex:none; color:var(--faint); font:10.5px var(--mono); }
+  .plan-card .poutline .beat i { flex:none; margin-left:auto; font-style:normal;
+                                 color:var(--faint); font-size:10.5px; }
+  .plan-card .btns { display:flex; gap:8px; margin-top:14px; }
+  .plan-card .btns .primary { margin-left:auto; }
+  .viewer { position:fixed; inset:0; background:rgba(5,5,6,.9); display:flex;
+            align-items:flex-start; justify-content:center; padding:26px; z-index:40;
+            overflow:auto; cursor:zoom-out; }
+  .viewer img { max-width:100%; max-height:94vh; border-radius:6px; }
+  .viewer .tip { position:fixed; top:10px; right:14px; font:11px var(--mono);
+                 color:#9c9c96; }  /* 大图遮罩恒为深色，提示字固定浅灰 */
+
+  .toasts { position:fixed; top:14px; right:14px; z-index:60; display:flex;
+            flex-direction:column; gap:8px; }
+  .toast { background:var(--panel3); border:1px solid var(--border2); color:var(--text);
+           border-radius:10px; padding:9px 14px; font-size:12.5px; max-width:340px;
+           box-shadow:var(--shadow); animation:rise .18s ease-out; }
+  .toast.err { border-color:rgba(248,81,73,.45); color:var(--err); }
+
+
+  /* ---------- 浅色主题微调（变量覆盖不了的部分） ---------- */
+  [data-theme="light"] .badge.done, [data-theme="light"] .badge.running
+    { background:#dafbe1; }
+  [data-theme="light"] .badge.failed { background:#ffebe9; }
+  [data-theme="light"] .badge.cancelled { background:#fff8c5; }
+  [data-theme="light"] .badge.panels, [data-theme="light"] .badge.compose,
+  [data-theme="light"] .badge.storyboard, [data-theme="light"] .badge.layout,
+  [data-theme="light"] .badge.script, [data-theme="light"] .badge.style,
+  [data-theme="light"] .badge.created { background:#ddf4ff; }
+  [data-theme="light"] #skill {
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='7' viewBox='0 0 10 7'><path d='M1 1l4 4 4-4' fill='none' stroke='%236f6f6a' stroke-width='1.6' stroke-linecap='round'/></svg>"); }
+  [data-theme="light"] .plan-card .cont { background:rgba(26,127,55,.06); }
+  [data-theme="light"] .plan-card .cont.new { background:rgba(9,105,218,.06); }
+
+  .scrim { position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:19; }
+  @media (max-width:880px) {
+    #app { grid-template-columns:1fr; }
+    #app > main { grid-column:1; }
+    .side { position:fixed; left:0; top:0; bottom:0; width:280px; z-index:20;
+            transform:translateX(-101%); transition:transform .18s ease-out;
+            box-shadow:8px 0 24px rgba(0,0,0,.45); }
+    .side.open { transform:none; }
+    .steps { display:none; }
+    .feed,.composer,.banner-row,.works-page { padding-left:14px; padding-right:14px; }
+    .thumbs,.final-page { margin-left:0; padding-left:0; }
+  }
+</style>
+</head>
+<body>
+<div id="app" v-cloak>
+  <aside class="side" :class="{open:sideOpen}">
+    <div class="brand"><span class="dot" :class="{live:liveRunning}"></span><b>comic-strip</b>
+      <button class="icon-btn" title="模型配置" @click="openCfg">⚙️</button>
+      <button class="icon-btn" :title="theme==='dark' ? '切换到浅色主题' : '切换到深色主题'"
+              @click="toggleTheme">{{theme==='dark' ? '☀️' : '🌙'}}</button>
+      <button class="icon-btn" title="收起菜单" @click="sideOpen=false">«</button></div>
+    <div class="side-scroll">
+      <button class="menu-item" title="新对话" @click="newChat">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4Z"/></svg>
+        <span>新对话</span>
+      </button>
+      <button class="menu-item" :class="{active:mode==='works'}" @click="openWorks">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
+        <span>作品</span><span class="meta">{{works.length}}</span>
+      </button>
+      <div class="sec">
+        <h3>会话</h3>
+        <div v-for="s in sessions" :key="s.sid" class="sess"
+             :class="{active:mode==='session'&&view.sid===s.sid}" @click="openSession(s)">
+          <template v-if="renaming===s.sid">
+            <span class="badge" :class="badgeCls(s)">{{badgeText(s)}}</span>
+            <input class="ren-input" v-model="renameText" @click.stop
+                   @keydown.enter.prevent="saveRename(s.sid)"
+                   @keydown.esc.stop.prevent="cancelRename"
+                   @blur="onRenameBlur(s.sid)">
+          </template>
+          <template v-else>
+            <span class="badge" :class="badgeCls(s)">{{badgeText(s)}}</span>
+            <span class="idea" :title="s.idea">{{s.idea}}</span>
+            <span class="tm" :title="fmtFull(s.updated)">{{fmtT(s.updated)}}</span>
+            <span class="rename-btn" title="重命名" @click.stop="startRename(s)">✎</span>
+          </template>
+        </div>
+        <div v-if="!sessions.length" class="empty">还没有会话</div>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <button v-show="!sideOpen" class="menu-btn" title="展开菜单" @click="sideOpen=true">☰</button>
+      <div class="title">{{headerTitle}}</div>
+      <div v-if="mode!=='works'" class="steps">
+        <template v-for="(st,i) in STEPS" :key="st[0]">
+          <span v-if="i" class="step-sep">─</span>
+          <span class="step" :class="stepCls(i)"><span class="b"></span>{{st[1]}}</span>
+        </template>
+      </div>
+      <button v-if="canResume" class="resume-btn" :disabled="liveRunning"
+              @click="resumeSession">恢复</button>
+    </div>
+
+    <div v-if="liveRunning && !viewIsLive" class="banner-row">
+      <div class="col">
+        <div class="live-banner" @click="jumpToLive">
+          <span class="spin"></span> 正在后台生成「{{liveIdea}}」— 点击返回查看
+        </div>
+      </div>
+    </div>
+
+    <div v-if="mode==='works'" class="works-page">
+      <div class="works-head"><h2>作品</h2><span class="n">{{works.length}} 页 · 点击查看大图</span></div>
+      <div v-if="!works.length" class="empty" style="padding:30px 0;text-align:center">
+        还没有作品——回到「新对话」生成第一页。
+      </div>
+      <div v-else class="wgrid">
+        <div v-for="w in works" :key="w.slug" class="wcard" @click="viewImg=w.page">
+          <img :src="w.page" loading="lazy" :alt="w.title">
+          <div class="wmeta">
+            <div class="t" :title="w.title">{{w.title}}</div>
+            <div class="d">{{w.layout||'—'}} · {{fmtT(w.mtime)}}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div v-else class="feed" ref="feed">
+      <div class="col feed-col">
+        <div v-if="!viewMsgs.length && !liveRunning" class="hero">
+          <div class="logo">✦</div>
+          <h1>把一个想法，变成<em>一页漫画</em></h1>
+          <p>文本模型写分镜，图片模型逐格作画，代码拼版渲染台词。输入一个抽象或日常的想法即可。</p>
+          <div class="ex">
+            <button v-for="e in examples" :key="e" @click="fillIdea(e)"><b>✦</b>{{e}}</button>
+          </div>
+        </div>
+        <div v-else-if="!viewMsgs.length && liveRunning" class="empty"
+             style="text-align:center;padding:30px 0">
+          <template v-if="viewIsLive"><span class="spin"></span> 正在创建会话…</template>
+          <template v-else><span class="spin"></span> 正在后台生成… 点击上方横幅返回查看</template>
+        </div>
+
+        <template v-for="(m,i) in viewMsgs" :key="i">
+          <div v-if="m.kind==='call'" class="row">
+            <details class="call">
+              <summary>
+                <span class="st" :class="{ok:m.done}">
+                  <span v-if="!m.done" class="spin"></span><template v-else>✓</template>
+                </span>
+                <span class="tw">{{m.name}}</span>
+                <span class="pv">{{m.args}}</span>
+                <span class="chev">▶</span>
+              </summary>
+              <div class="inner">{{m.args}}
+                <div v-if="m.result" class="r">{{m.result}}</div>
+              </div>
+            </details>
+          </div>
+          <div v-else-if="m.kind==='result'" class="row">
+            <div class="msg"><div class="who">↩</div><div class="body"><pre>{{m.text}}</pre></div></div>
+          </div>
+          <div v-else-if="m.kind==='img'" class="row">
+            <div class="thumbs"><img :src="m.url" @click="viewImg=m.url"></div>
+          </div>
+          <div v-else-if="m.kind==='page'" class="row">
+            <div class="final-page" @click="viewImg=m.url"><img :src="m.url">
+              <div class="cap"><b>✓</b> 成品页 · 点击放大</div></div>
+          </div>
+          <div v-else-if="m.kind==='final'" class="row">
+            <div class="msg assistant"><div class="who">✅</div>
+              <div class="body"><pre>{{m.text}}</pre></div></div>
+          </div>
+          <div v-else-if="m.kind==='error'" class="row">
+            <div class="msg error"><div class="who">✗</div><div class="body"><pre>{{m.text}}</pre></div></div>
+          </div>
+          <div v-else class="row">
+            <div class="msg sys"><div class="who">{{m.icon||'·'}}</div>
+              <div class="body"><pre>{{m.text}}</pre></div></div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <div v-if="mode!=='works'" class="composer">
+      <div class="col">
+        <div class="input-card">
+          <div v-if="refs.length" class="ref-bar">
+            <span v-for="r in refs" :key="r.name" class="chip">
+              <img v-if="r.file" :src="'/files/refs/'+encodeURIComponent(r.file)"
+                   @error="$event.target.style.display='none'">
+              <span>{{r.name}}</span>
+              <span v-if="r.desc" class="d" :title="r.desc">{{r.desc}}</span>
+              <span class="x" title="删除参考图" @click="deleteRef(r.name)">×</span>
+            </span>
+          </div>
+          <textarea id="idea" v-model="idea" rows="2" ref="ideaBox"
+                    :placeholder="mode==='session' && view.sid
+                      ? '续写：接在这个作品后面画（也粘贴全新内容，规划器会判断）'
+                      : '一个想法、几段文字或一整章小说……'"
+                    @keydown.ctrl.enter="makePlan" @keydown.meta.enter="makePlan"
+                    @input="grow"></textarea>
+          <div class="input-row">
+            <span class="ref-add" title="上传角色参考图（垫图保持长相一致）"
+                  @click="openRefModal">＋ 参考图</span>
+            <select id="skill" v-model="skill" @dblclick="pickSkillFile">
+              <option value="">自动：按剧本气质选画师</option>
+              <option v-for="s in skills" :key="s.id" :value="s.id" :title="s.description">
+                {{s.title}}</option>
+              <option value="none">不启用画师</option>
+            </select>
+            <span class="skill-add" title="上传自定义画师 skill（.md）"
+                  @click="pickSkillFile">＋画师</span>
+            <button v-if="viewIsLive && liveRunning" class="stop-btn" @click="stopRun">■ 停止</button>
+            <button id="go" :disabled="planning || liveRunning" @click="onGo">
+              {{planning ? '规划中…' : (liveRunning ? '生成中…'
+                : (mode==='session' && view.sid ? '规划续写' : '生成'))}}</button>
+          </div>
+        </div>
+        <div class="hint">
+          <template v-if="mode==='session' && view.sid">将自动衔接本会话的人物与剧情 · 长文本会分页，确认前先看预估费用</template>
+          <template v-else>一句想法 1 页 · 长文本自动分页 · 确认前先看预估费用 ·
+            <kbd>Ctrl</kbd>+<kbd>Enter</kbd> 规划</template>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <div v-if="refModal" class="overlay" @click.self="refModal=false">
+    <div class="card">
+      <h3>上传角色参考图</h3>
+      <div class="tip">剧本会强制使用这些角色；作画时按名字垫图保持长相一致。描述留空由视觉模型自动补。</div>
+      <input type="text" v-model.trim="refName" placeholder="角色名，如：小满">
+      <input type="text" v-model.trim="refDesc" placeholder="一句话外貌（可空，自动生成）">
+      <div class="btns">
+        <button @click="$refs.refFile.click()">选择图片</button>
+        <span class="fname">{{refFile?refFile.name:'未选择图片'}}</span>
+        <button class="primary" :disabled="!refName" @click="uploadRef">上传</button>
+      </div>
+      <input type="file" ref="refFile" hidden accept="image/*" @change="onRefFile">
+    </div>
+  </div>
+  <div v-if="planOffer" class="overlay" @click.self="cancelPlan">
+    <div class="card plan-card">
+      <h3>生成规划
+        <span class="badge" :class="planOffer.plan.kind==='long' ? 'panels' : 'done'">
+          {{planOffer.plan.kind==='long' ? `连载 ${planOffer.plan.pages} 页` : '单页'}}</span>
+        <span v-if="planOffer.continuing" class="badge running">
+          续写 · 从第 {{planOffer.start_no}} 页起</span>
+      </h3>
+      <div class="pt">{{planOffer.plan.synopsis || planOffer.plan.title}}</div>
+      <div v-if="planOffer.continuing" class="cont">
+        ✓ 判定为续写：衔接本会话已完成的 {{planOffer.pages_before}} 页，沿用其角色与画风
+        <span v-if="planOffer.plan.continuation_reason">（{{planOffer.plan.continuation_reason}}）</span>
+      </div>
+      <div v-else-if="planOffer.had_sid && planOffer.plan.continuation_reason" class="cont new">
+        判定为全新作品：{{planOffer.plan.continuation_reason}}
+      </div>
+      <div class="prow"><b>画师</b><span>{{artistLabel(planOffer)}}</span></div>
+      <div class="prow"><b>角色</b>
+        <span class="pchars">
+          <span v-for="c in planOffer.plan.characters" :key="c.name" class="pchip"
+                :title="c.look">{{c.name}}</span>
+          <span v-if="!planOffer.plan.characters.length" class="dimm">无固定角色</span>
+        </span></div>
+      <div v-if="planOffer.plan.cast_map && planOffer.plan.cast_map.length" class="prow">
+        <b>替换</b>
+        <span class="pmap">
+          <span v-for="m in planOffer.plan.cast_map" :key="m.from">
+            {{m.from}} <i>→</i> <b>{{m.to}}</b></span>
+        </span></div>
+      <div class="prow"><b>预计</b><span class="cost">¥{{planOffer.cost.cny}}
+        <i>（约 {{planOffer.cost.panels_est}} 格 · 波动 ¥{{planOffer.cost.lo}}–{{planOffer.cost.hi}}）</i></span></div>
+      <div class="pnote">{{planOffer.cost.note}}</div>
+      <div v-if="planOffer.plan.note" class="pnote">💡 {{planOffer.plan.note}}</div>
+      <details v-if="planOffer.plan.outline.length" class="poutline">
+        <summary>分页拍点（{{planOffer.plan.outline.length}} 页）</summary>
+        <div v-for="b in planOffer.plan.outline" :key="b.page" class="beat">
+          <b>P{{b.page}}</b><span>{{b.beat}}</span>
+          <i v-if="b.characters && b.characters.length">{{b.characters.join('、')}}</i>
+        </div>
+      </details>
+      <div class="btns">
+        <button @click="cancelPlan">取消（不花钱）</button>
+        <button class="primary" @click="confirmGenerate">开始生成 · 预计 ¥{{planOffer.cost.cny}}</button>
+      </div>
+    </div>
+  </div>
+  <div v-if="cfgModal" class="overlay" @click.self="cfgModal=false">
+    <div class="card cfg-card">
+      <h3>模型配置</h3>
+      <div class="cfg-sec">
+        <h4>文本模型 <i>写分镜、规划</i></h4>
+        <select v-model="cfg.text.preset" class="cfg-preset" @change="applyPreset('text')">
+          <option value="deepseek">DeepSeek</option>
+          <option value="glm">智谱 GLM</option>
+          <option value="custom">自定义</option>
+        </select>
+        <label>API Key</label>
+        <input type="password" v-model="cfg.text.api_key" autocomplete="off"
+               :placeholder="cfg.text.has_key ? '已配置 ' + cfg.text.key_hint + '（留空保持不变）' : '未配置，填入密钥'">
+        <label>端点 Base URL</label>
+        <input type="text" v-model="cfg.text.base_url" :placeholder="presetOf('text').base_url || 'https://api.deepseek.com/v1'">
+        <label>模型名</label>
+        <input type="text" v-model="cfg.text.model" :placeholder="presetOf('text').model || 'deepseek-chat'">
+      </div>
+      <div class="cfg-sec">
+        <h4>生图模型 <i>逐格作画</i></h4>
+        <select v-model="cfg.image.preset" class="cfg-preset" @change="applyPreset('image')">
+          <option value="ark">字节 · 火山方舟（Seedream）</option>
+          <option value="custom">自定义</option>
+        </select>
+        <label>API Key</label>
+        <input type="password" v-model="cfg.image.api_key" autocomplete="off"
+               :placeholder="cfg.image.has_key ? '已配置 ' + cfg.image.key_hint + '（留空保持不变）' : '未配置，填入密钥'">
+        <label>端点 Base URL</label>
+        <input type="text" v-model="cfg.image.base_url" :placeholder="presetOf('image').base_url || 'https://ark.cn-beijing.volces.com/api/v3'">
+        <label>模型名</label>
+        <input type="text" v-model="cfg.image.model" :placeholder="presetOf('image').model || 'doubao-seedream-5-0-flash-260915'">
+      </div>
+      <div class="tip">保存写入本机 comic_out/web_config.json，下一次生成即生效、重启后仍生效
+        （优先级高于 run-web 脚本；删除该文件可回到脚本配置）。走字节方舟时自动关闭水印。</div>
+      <div class="btns">
+        <button @click="cfgModal=false">取消</button>
+        <button class="primary" :disabled="cfgSaving" @click="saveCfg">
+          {{cfgSaving ? '保存中…' : '保存并生效'}}</button>
+      </div>
+    </div>
+  </div>
+  <div v-if="viewImg" class="viewer" @click="viewImg=''"><img :src="viewImg">
+    <span class="tip">点击任意处或按 Esc 关闭</span></div>
+  <div v-if="sideOpen" class="scrim" @click="sideOpen=false"></div>
+  <div class="toasts">
+    <div v-for="t in toasts" :key="t.id" class="toast" :class="{err:t.kind==='err'}">{{t.text}}</div>
+  </div>
+  <input type="file" ref="skillFile" hidden accept=".md" @change="onSkillFile">
+</div>
+
+<script src="/static/vendor/vue.global.prod.js"></script>
+<script>
+if (!window.Vue) {
+  document.getElementById("app").innerHTML =
+    '<div style="margin:40vh auto 0;text-align:center;color:#8b8b85;font:14px system-ui">' +
+    "界面资源加载失败（web/vendor/vue.global.prod.js 缺失）。" +
+    "请重启服务：\\.\\run-web.bat</div>";
+} else (function () {
+const { createApp } = Vue;
+
+const STEPS = [["created","新建"],["style","选画师"],["script","剧本"],["storyboard","分镜"],
+               ["layout","版式"],["panels","作画"],["compose","合成"],["done","完成"]];
+// 回显文案 → 步进（按流水线顺序排列，先命中先得；result 行也参与，见 stepFromText）
+const STEP_MARKS = [["compose","page composed"],["panels","generated ->"],
+  ["layout","layout planned"],["storyboard","storyboard saved"],["script","script saved"],
+  ["style","画师自选"]];
+const BADGE = { created:"新建", style:"选画师", script:"剧本", storyboard:"分镜",
+                layout:"版式", panels:"作画", compose:"合成", done:"完成",
+                failed:"失败", cancelled:"中断" };
+const EXAMPLES = [
+  "一个关于「追赶昨天的自己」的哲理短篇",
+  "社畜周五下班地铁上的白日梦",
+  "一只猫第一次看到下雪，安静治愈风",
+  "时间管理大师的翻车现场，搞笑向",
+];
+// 模型预设：选厂商自动填端点与模型名（仍可手改成自定义）
+const TEXT_PRESETS = {
+  deepseek: { base_url: "https://api.deepseek.com/v1", model: "deepseek-chat" },
+  glm: { base_url: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4.5-air" },
+};
+const IMAGE_PRESETS = {
+  ark: { base_url: "https://ark.cn-beijing.volces.com/api/v3",
+         model: "doubao-seedream-5-0-flash-260915" },
+};
+
+const app = createApp({
+  data() {
+    return {
+      STEPS,
+      examples: EXAMPLES,
+      sessions: [], works: [], skills: [], refs: [],
+      // 视图：mode new=新对话 | session=某会话；消息流全部派生自 live/archive
+      view: { mode: "new", sid: "" },
+      live: null,            // 进行中的生成：{sid, origin('new'|sid), msgs, step, running}
+      archive: { msgs: [], step: "created", sid: "" },
+      idea: "", skill: "",
+      theme: "dark", sideOpen: true, viewImg: "",
+      refModal: false, refName: "", refDesc: "", refFile: null,
+      renaming: "", renameText: "",       // 会话行内重命名
+      planOffer: null, planning: false,   // 规划确认流：/api/plan 的结果挂在这
+      cfgModal: false, cfgSaving: false,  // 模型配置弹窗
+      cfg: {
+        text: { preset: "deepseek", api_key: "", base_url: "", model: "",
+                has_key: false, key_hint: "" },
+        image: { preset: "ark", api_key: "", base_url: "", model: "",
+                 has_key: false, key_hint: "" },
+      },
+      toasts: [], _toastSeq: 0,
+    };
+  },
+  computed: {
+    mode() { return this.view.mode; },
+    liveRunning() { return !!(this.live && this.live.running); },
+    liveIdea() {
+      if (!this.live) return "";
+      const s = this.sessions.find(x => x.sid === this.live.sid);
+      if (s) return s.idea;
+      return this.live.origin === "new" ? (this._startedIdea || "新想法") : this.live.sid;
+    },
+    viewIsLive() {
+      if (!this.live) return false;
+      if (this.view.mode === "new") return this.live.origin === "new";
+      return this.view.sid === this.live.sid;
+    },
+    viewMsgs() {
+      if (this.viewIsLive) return this.live.msgs;
+      if (this.view.mode === "session") return this.archive.sid === this.view.sid
+        ? this.archive.msgs : [];
+      return [];
+    },
+    viewStep() {
+      if (this.viewIsLive) return this.live.step;
+      if (this.view.mode === "session") return this.archive.sid === this.view.sid
+        ? this.archive.step : "created";
+      return "created";
+    },
+    curSnap() {
+      return this.view.mode === "session"
+        ? this.sessions.find(s => s.sid === this.view.sid) || null : null;
+    },
+    headerTitle() {
+      if (this.view.mode === "works") return `作品 · ${this.works.length} 页`;
+      if (this.view.mode === "new") {
+        if (this.viewIsLive && this.liveRunning) return "生成中…";
+        return "新对话";
+      }
+      const s = this.curSnap;
+      if (!s) return "会话";
+      const prog = s.pages_total > 1 ? ` · ${s.pages_done}/${s.pages_total} 页` : "";
+      return `${s.idea}${prog} · ${BADGE[s.state] || s.state}`;
+    },
+    canResume() {
+      const s = this.curSnap;
+      // failed/cancelled 只要有分镜就能续跑（画到一半挂掉正是恢复的主场景）
+      return !!(s && s.resumable && s.state !== "done" && !this.liveRunning);
+    },
+  },
+  methods: {
+    /* ---------- 消息渲染管线（实时与回放共用） ---------- */
+    parseLine(text) {
+      if (text.startsWith("· ")) {
+        const m = text.slice(2).match(/^(\w+)\((.*)\)$/s);
+        if (m) return { kind: "call", name: m[1], args: m[2] };
+      } else if (text.trimStart().startsWith("↳")) {
+        return { kind: "result", text: text.trimStart().replace(/^↳\s*/, "") };
+      } else if (text.startsWith("✓")) {
+        return { kind: "final", text };
+      } else if (text.startsWith("✗")) {
+        return { kind: "error", text };
+      } else if (text.startsWith("⏹")) {
+        return { kind: "sys", icon: "⏹", text };
+      }
+      const icon = text.startsWith("🎨") ? "🎨" : text.startsWith("🔧") ? "🔧"
+                 : text.startsWith("👤") ? "👤" : text.startsWith("🖌") ? "🖌" : "·";
+      return { kind: "sys", icon, text };
+    },
+    // 结果行折叠进上一个工具卡（显示 ✓ 与结果摘要）；其余按消息入列
+    pushMsg(list, m) {
+      const last = list[list.length - 1];
+      if (m.kind === "result" && last && last.kind === "call" && !last.done) {
+        last.done = true;
+        last.result = m.text;
+        return;
+      }
+      list.push(m);
+    },
+    stepFromText(kind, t) {
+      if (kind === "final") { this.setLiveStep("done"); return; }
+      for (const [k, mark] of STEP_MARKS) if (t.includes(mark)) { this.setLiveStep(k); break; }
+    },
+    setLiveStep(k) {
+      const target = this.live || this.archive;
+      if (!STEPS.some(s => s[0] === k)) return;
+      if (STEPS.findIndex(s => s[0] === target.step) <= STEPS.findIndex(s => s[0] === k))
+        target.step = k;
+    },
+    feedNearBottom() {
+      const f = this.$refs.feed;
+      return !f || f.scrollHeight - f.scrollTop - f.clientHeight < 140;
+    },
+    scrollFeed(force) {
+      const near = this.feedNearBottom();
+      this.$nextTick(() => {
+        const f = this.$refs.feed;
+        if (f && (force || near)) f.scrollTop = f.scrollHeight;
+      });
+    },
+    grow(e) {
+      const t = e.target;
+      t.style.height = "auto";
+      t.style.height = Math.min(t.scrollHeight, 200) + "px";
+    },
+
+    /* ---------- 生成（fetch 流式 SSE；错误可见、可停止、后台不中断） ---------- */
+    async runStream(url, live) {
+      const ctrl = new AbortController();
+      this._ctrl = ctrl;
+      let terminal = false;
+      const push = (m) => {
+        this.pushMsg(live.msgs, m);
+        this.stepFromText(m.kind, m.text || "");
+        if (this.viewIsLive) this.scrollFeed();
+      };
+      try {
+        const res = await fetch(url, { signal: ctrl.signal });
+        if (!res.ok) {
+          let detail = "";
+          try { detail = (await res.json()).detail || ""; } catch {}
+          throw new Error(detail || `HTTP ${res.status}`);
+        }
+        const reader = res.body.getReader();
+        const dec = new TextDecoder();
+        let buf = "";
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let i;
+          while ((i = buf.indexOf("\n\n")) >= 0) {
+            const chunk = buf.slice(0, i);
+            buf = buf.slice(i + 2);
+            const line = chunk.split("\n").find(l => l.startsWith("data:"));
+            if (!line) continue;
+            let m;
+            try { m = JSON.parse(line.slice(5).trim()); } catch { continue; }
+            if (m.sid && !live.sid) {           // 第一个事件带 sid：进侧栏并刷新列表
+              live.sid = m.sid;
+              if (live.origin === "new") this.view.sid = "";
+              this.loadSessions();
+            }
+            if (m.type === "log") push(this.parseLine(m.text));
+            else if (m.type === "file") {
+              live.msgs.push(String(m.url).includes("/pages/")
+                ? { kind: "page", url: m.url } : { kind: "img", url: m.url });
+              if (this.viewIsLive) this.scrollFeed();
+            } else if (m.type === "done") {
+              terminal = true;
+              push({ kind: "final", text: "✓ " + (m.answer || "（完成）") });
+            } else if (m.type === "error") {
+              terminal = true;
+              push({ kind: "error", text: "✗ " + m.message });
+            }
+          }
+        }
+        if (!terminal) push({ kind: "error", text: "✗ 连接中断，生成已停止（有分镜的话可稍后恢复）" });
+      } catch (err) {
+        if (!ctrl.signal.aborted)
+          push({ kind: "error", text: "✗ " + (err.message === "Failed to fetch"
+            ? "无法连接生成服务" : err.message) });
+        else push({ kind: "sys", icon: "⏹", text: "⏹ 已停止生成" });
+      } finally {
+        live.running = false;
+        this._ctrl = null;
+        await Promise.all([this.loadSessions(), this.loadWorks()]);
+        // 结束后刷新该会话快照（侧栏徽章/恢复按钮），但保留现场消息流
+        if (live.sid && this.view.sid === live.sid && this.view.mode === "session")
+          this.refreshArchiveHeader();
+        if (this.viewIsLive) this.scrollFeed();
+      }
+    },
+    /* ---------- 规划 → 确认 → 生成 ---------- */
+    async makePlan() {
+      const idea = this.idea.trim();
+      if (!idea || this.planning) return;
+      if (this.liveRunning) { this.jumpToLive(); return; }   // 一次只跑一个
+      this.planning = true;
+      try {
+        const body = { idea, skill: this.skill };
+        if (this.mode === "session" && this.view.sid) body.sid = this.view.sid;
+        const res = await fetch("/api/plan", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          throw new Error(d.detail || `HTTP ${res.status}`);
+        }
+        this.planOffer = await res.json();
+      } catch (err) {
+        this.toast(err.message === "Failed to fetch" ? "无法连接服务" : err.message, "err");
+      } finally {
+        this.planning = false;
+      }
+    },
+    artistLabel(offer) {
+      const p = offer.plan;
+      if (!p.skill) return "不指定画师（默认风格指引）";
+      const s = this.skills.find(x => x.id === p.skill);
+      const name = s ? s.title : p.skill;
+      return p.skill_source === "user" ? `${name}（你指定的）` : `${name} — ${p.skill_reason || "按气质匹配"}`;
+    },
+    async confirmGenerate() {
+      const offer = this.planOffer;
+      if (!offer || this.liveRunning) return;
+      this.planOffer = null;
+      this.idea = "";
+      const sid = offer.sid;
+      this._startedIdea = offer.plan.title;
+      this.live = { sid, origin: sid, msgs: [], step: "created", running: true };
+      this.view = { mode: "session", sid };
+      this.loadSessions();
+      this.closeSideOnMobile();
+      this.scrollFeed(true);
+      this.runStream("/api/generate?sid=" + encodeURIComponent(sid), this.live);
+    },
+    async cancelPlan() {
+      const offer = this.planOffer;
+      this.planOffer = null;
+      if (!offer) return;
+      if (!offer.continuing && !offer.has_pages) {
+        // 全新且无产物：会话一并删掉，别在侧栏留垃圾
+        await fetch("/api/sessions/" + encodeURIComponent(offer.sid), { method: "DELETE" })
+          .catch(() => {});
+        this.toast("已取消，未产生费用");
+      } else {
+        // 续写/已有产物：会话保留，但清掉未确认的规划（防误触恢复烧钱）
+        await fetch("/api/sessions/" + encodeURIComponent(offer.sid), {
+          method: "PATCH", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ clear_plan: true }),
+        }).catch(() => {});
+      }
+      this.loadSessions();
+    },
+    onGo() {
+      if (this.liveRunning) { this.jumpToLive(); return; }
+      this.makePlan();
+    },
+    stopRun() {
+      if (this._ctrl) this._ctrl.abort();   // 断开即取消后台任务（服务端设计如此）
+    },
+    jumpToLive() {
+      if (!this.live) return;
+      this.view = this.live.origin === "new"
+        ? { mode: "new", sid: "" } : { mode: "session", sid: this.live.sid };
+      this.closeSideOnMobile();
+      this.scrollFeed(true);
+    },
+    resumeSession() {
+      const s = this.curSnap;
+      if (!s || this.liveRunning) return;
+      this._startedIdea = s.idea;
+      this.live = { sid: s.sid, origin: s.sid, msgs: [], step: "created", running: true };
+      this.view = { mode: "session", sid: s.sid };
+      this.closeSideOnMobile();
+      // 有规划 → 走 /api/generate（页幂等，已完成的页自动跳过）；无规划 → 旧的单页断点续跑
+      const hasPlan = !!s.plan;
+      this.pushMsg(this.live.msgs, {
+        kind: "sys", icon: "🔧",
+        text: hasPlan
+          ? "🔧 按已确认的规划继续生成（已完成的页会自动跳过）"
+          : "🔧 从断点恢复会话（只补缺失的格子，不重新写剧本）",
+      });
+      this.scrollFeed(true);
+      this.runStream(
+        (hasPlan ? "/api/generate?sid=" : "/api/sessions/") +
+        encodeURIComponent(s.sid) + (hasPlan ? "" : "/resume"),
+        this.live,
+      );
+    },
+
+    /* ---------- 会话 ---------- */
+    async openSession(s) {
+      this.closeSideOnMobile();
+      this.view = { mode: "session", sid: s.sid };
+      if (this.live && this.live.sid === s.sid) { this.scrollFeed(true); return; }
+      if (this.archive.sid === s.sid) { this.scrollFeed(true); return; }  // 已加载过
+      await this.refreshArchive(s.sid);
+      this.scrollFeed(true);
+    },
+    async refreshArchive(sid) {
+      try {
+        const d = await (await fetch("/api/sessions/" + encodeURIComponent(sid))).json();
+        if (this.view.sid !== sid) return;                     // 期间切走了
+        const built = this.buildMsgs(d.events || []);
+        this.archive = { sid, msgs: built.msgs, step: built.step };
+      } catch {
+        this.archive = { sid, msgs: [{ kind: "error", text: "✗ 会话加载失败" }],
+                         step: "created" };
+      }
+    },
+    async refreshArchiveHeader() { this.loadSessions(); },
+    buildMsgs(events) {
+      const msgs = [];
+      let step = "created";
+      const advance = (st) => {
+        const i = STEPS.findIndex(s => s[0] === st);
+        if (i >= 0 && i > STEPS.findIndex(s => s[0] === step)) step = st;
+      };
+      for (const ev of events) {
+        if (ev.type === "state") {
+          const st = ev.data?.state;
+          if (STEPS.some(x => x[0] === st) && st !== "failed" && st !== "cancelled")
+            advance(st);
+        } else if (ev.type === "log") {
+          const m = this.parseLine(ev.data);
+          this.pushMsg(msgs, m);
+          if (m.kind !== "result") {
+            if (m.kind === "final") advance("done");
+            else for (const [k, mark] of STEP_MARKS)
+              if (String(ev.data).includes(mark)) { advance(k); break; }
+          }
+        } else if (ev.type === "file") {
+          msgs.push(String(ev.data).includes("/pages/")
+            ? { kind: "page", url: ev.data } : { kind: "img", url: ev.data });
+        } else if (ev.type === "done") {
+          msgs.push({ kind: "final", text: "✓ " + (ev.data?.answer || "") });
+          advance("done");
+        } else if (ev.type === "error") {
+          msgs.push({ kind: "error", text: "✗ " + (ev.data?.message || "") });
+        } else if (ev.type === "cancelled") {
+          msgs.push({ kind: "sys", icon: "⏹", text: "⏹ 会话在此中断——有分镜的话可点右上角「恢复」继续" });
+        }
+      }
+      return { msgs, step };
+    },
+    openWorks() {
+      this.view = { mode: "works", sid: "" };
+      this.closeSideOnMobile();
+      this.loadWorks();          // 进页面时顺手刷一次
+    },
+    newChat() {
+      this.view = { mode: "new", sid: "" };
+      this.closeSideOnMobile();
+      if (this.live && !this.live.running) this.live = null;  // 结束的运行在侧栏会话里
+    },
+    closeSideOnMobile() {        // 桌面端侧栏常开；移动端选完即收抽屉
+      if (window.innerWidth <= 880) this.sideOpen = false;
+    },
+
+    /* ---------- 会话重命名 ---------- */
+    startRename(s) {
+      this.renaming = s.sid;
+      this.renameText = s.idea;
+      this.$nextTick(() => {
+        const el = document.querySelector(".ren-input");
+        if (el) { el.focus(); el.select(); }
+      });
+    },
+    cancelRename() { this.renaming = ""; this.renameText = ""; },
+    onRenameBlur(sid) {          // 失焦即保存（Enter 已退出编辑态时这里是空操作）
+      if (this.renaming === sid) this.saveRename(sid);
+    },
+    async saveRename(sid) {
+      if (this.renaming !== sid) return;
+      this.renaming = "";        // 先退出编辑态，防 blur 触发重复提交
+      const t = this.renameText.trim();
+      this.renameText = "";
+      const old = (this.sessions.find(x => x.sid === sid) || {}).idea;
+      if (!t || t === old) return;
+      const res = await fetch("/api/sessions/" + encodeURIComponent(sid), {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idea: t }),
+      });
+      if (res.ok) {
+        const snap = await res.json();
+        const i = this.sessions.findIndex(x => x.sid === sid);
+        if (i >= 0) this.sessions[i] = snap;
+        this.toast("已重命名");
+      } else {
+        const d = await res.json().catch(() => ({}));
+        this.toast("重命名失败：" + (d.detail || res.status), "err");
+      }
+    },
+    fillIdea(t) {
+      this.idea = t;
+      this.$nextTick(() => this.$refs.ideaBox && this.$refs.ideaBox.focus());
+    },
+
+    /* ---------- 数据加载 ---------- */
+    async loadSessions() {
+      try { const r = await (await fetch("/api/sessions")).json();
+            this.sessions = Array.isArray(r) ? r : []; }
+      catch { /* 保持旧列表，别把侧栏闪空 */ }
+    },
+    async loadWorks() {
+      try { const r = await (await fetch("/api/works")).json();
+            this.works = Array.isArray(r) ? r : []; }
+      catch { this.works = []; }
+    },
+    async loadSkills() {
+      try { const r = await (await fetch("/api/skills")).json();
+            this.skills = Array.isArray(r) ? r : [];
+            if (this.skill && !this.skills.some(s => s.id === this.skill)) this.skill = ""; }
+      catch { this.skills = []; }
+    },
+    async loadRefs() {
+      try { const r = await (await fetch("/api/refs")).json();
+            this.refs = Array.isArray(r) ? r : []; }
+      catch { this.refs = []; }
+    },
+    async deleteRef(name) {
+      await fetch("/api/refs/" + encodeURIComponent(name), { method: "DELETE" });
+      this.loadRefs();
+      this.toast("已删除参考图：" + name);
+    },
+
+    /* ---------- 参考图上传 ---------- */
+    openRefModal() { this.refModal = true; },
+    onRefFile(e) { this.refFile = e.target.files[0] || null; e.target.value = ""; },
+    async uploadRef() {
+      if (!this.refName) return;
+      if (!this.refFile) return this.$refs.refFile.click();
+      const b64 = await new Promise((ok, no) => { const fr = new FileReader();
+        fr.onload = () => ok(fr.result); fr.onerror = no; fr.readAsDataURL(this.refFile); });
+      const res = await fetch("/api/refs", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: this.refName, image: b64, desc: this.refDesc }),
+      });
+      if (res.ok) {
+        const saved = await res.json().catch(() => ({}));
+        this.refModal = false; this.refName = ""; this.refDesc = ""; this.refFile = null;
+        this.loadRefs();
+        this.toast("已上传参考图：" + (saved.name || ""));
+      } else {
+        const d = await res.json().catch(() => ({}));
+        this.toast("上传失败：" + (d.detail || res.status), "err");
+      }
+    },
+
+    /* ---------- 画师 skill 上传 ---------- */
+    pickSkillFile() { this.$refs.skillFile.click(); },
+    async onSkillFile(e) {
+      const f = e.target.files[0]; if (!f) return;
+      const content = await f.text();
+      const res = await fetch("/api/skills", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: f.name, content }),
+      });
+      if (res.ok) {
+        const saved = await res.json();
+        await this.loadSkills(); this.skill = saved.id;
+        this.toast("画师已可选：" + saved.title);
+      } else {
+        const d = await res.json().catch(() => ({}));
+        this.toast("上传失败：" + (d.detail || res.status), "err");
+      }
+      e.target.value = "";
+    },
+
+    /* ---------- 小件 ---------- */
+    badgeCls(s) {
+      if (this.live && this.live.sid === s.sid && this.live.running) return "running";
+      return s.state;
+    },
+    badgeText(s) {
+      if (this.live && this.live.sid === s.sid && this.live.running) return "生成中";
+      return BADGE[s.state] || s.state;
+    },
+    stepCls(i) {
+      const idx = STEPS.findIndex(s => s[0] === this.viewStep);
+      if (idx < 0) return "";
+      return i < idx ? "done" : i === idx ? "now" : "";
+    },
+    fmtT(ts) {
+      if (!ts) return "";
+      const d = new Date(ts * 1000), now = new Date();
+      const diff = (now - d) / 1000;
+      if (diff < 60) return "刚刚";
+      if (diff < 3600) return Math.floor(diff / 60) + "分钟前";
+      if (diff < 86400 && d.getDate() === now.getDate())
+        return d.toTimeString().slice(0, 5);
+      const p = n => String(n).padStart(2, "0");
+      return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    },
+    fmtFull(ts) { return ts ? new Date(ts * 1000).toLocaleString("zh-CN", { hour12: false }) : ""; },
+    toast(text, kind) {
+      const id = ++this._toastSeq;
+      this.toasts.push({ id, text, kind: kind || "" });
+      setTimeout(() => { this.toasts = this.toasts.filter(t => t.id !== id); }, 3600);
+    },
+    onKey(e) {
+      if (e.key !== "Escape") return;
+      if (this.viewImg) this.viewImg = "";
+      else if (this.refModal) this.refModal = false;
+      else if (this.cfgModal) this.cfgModal = false;
+    },
+    toggleTheme() {
+      this.theme = this.theme === "dark" ? "light" : "dark";
+      document.documentElement.dataset.theme = this.theme;
+      try { localStorage.setItem("cms-theme", this.theme); } catch {}
+    },
+    /* ---------- 模型配置 ---------- */
+    async openCfg() {
+      this.cfgModal = true;
+      try {
+        const r = await (await fetch("/api/config")).json();
+        for (const g of ["text", "image"]) {
+          this.cfg[g].base_url = r[g].base_url;
+          this.cfg[g].model = r[g].model;
+          this.cfg[g].has_key = r[g].has_key;
+          this.cfg[g].key_hint = r[g].key_hint;
+          this.cfg[g].api_key = "";
+          this.cfg[g].preset = this.guessPreset(g, r[g].base_url);
+        }
+      } catch { this.toast("配置读取失败", "err"); }
+    },
+    guessPreset(group, base) {
+      const b = (base || "").toLowerCase();
+      if (group === "text") {
+        if (b.includes("deepseek")) return "deepseek";
+        if (b.includes("bigmodel") || b.includes("zhipu")) return "glm";
+        return "custom";
+      }
+      return (b.includes("ark") || b.includes("volces")) ? "ark" : "custom";
+    },
+    presetOf(group) {
+      const p = this.cfg[group].preset;
+      if (group === "text") return TEXT_PRESETS[p] || {};
+      return IMAGE_PRESETS[p] || {};
+    },
+    applyPreset(group) {
+      const p = this.presetOf(group);
+      if (p.base_url) this.cfg[group].base_url = p.base_url;
+      if (p.model) this.cfg[group].model = p.model;
+    },
+    async saveCfg() {
+      this.cfgSaving = true;
+      try {
+        const body = {};
+        for (const g of ["text", "image"]) {
+          body[g] = {};
+          for (const f of ["api_key", "base_url", "model"]) {
+            const v = this.cfg[g][f].trim();
+            if (v) body[g][f] = v;
+          }
+        }
+        const res = await fetch("/api/config", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          throw new Error(d.detail || res.status);
+        }
+        this.cfgModal = false;
+        this.toast("已保存，下一次生成生效");
+      } catch (err) {
+        this.toast("保存失败：" + (err.message === "Failed to fetch" ? "无法连接服务" : err.message), "err");
+      } finally {
+        this.cfgSaving = false;
+      }
+    },
+  },
+  watch: {
+    sideOpen(v) { try { localStorage.setItem("cms-side", v ? "open" : "closed"); } catch {} },
+  },
+  mounted() {
+    // 侧栏开合：记住上次选择；没动过时桌面默认展开、移动端默认收起
+    try {
+      const saved = localStorage.getItem("cms-side");
+      this.sideOpen = saved ? saved === "open" : window.innerWidth > 880;
+    } catch { this.sideOpen = window.innerWidth > 880; }
+    // 主题：head 里的内联脚本已按 localStorage/系统偏好设好 html 属性，这里同步进 data
+    this.theme = document.documentElement.dataset.theme === "light" ? "light" : "dark";
+    this.loadSkills(); this.loadRefs(); this.loadSessions(); this.loadWorks();
+    window.addEventListener("keydown", this.onKey);
+  },
+  unmounted() {
+    window.removeEventListener("keydown", this.onKey);
+    if (this._ctrl) this._ctrl.abort();
+  },
+}).mount("#app");
+
+// 调试/测试钩子（mount 的返回值是根组件的公共代理）
+window.__app = app;
+})();
+</script>
+</body>
+</html>

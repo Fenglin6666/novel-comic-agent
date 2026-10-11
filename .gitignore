@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+comic_out/
+comic_out*/
+run-*.ps1
+.idea/
+
+.ruff_cache/
+run-*.bat
+web_config.json
+*.local.json
