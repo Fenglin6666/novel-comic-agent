@@ -693,7 +693,8 @@ class GeneratePanel(BaseTool):
             named = "、".join(ref_names)
             parts.append(
                 f"{named} 必须与输入参考图中的角色保持完全一致：同一人物，"
-                "脸型、发型、五官、服装、配色一律照搬参考图，不要按文字重新设计"
+                "脸型、发型、五官、表情风格、服装、配色一律照搬参考图，"
+                "不要按文字重新设计"
             )
         parts.append(target["prompt"])
         prompt = "。".join(parts) + NO_TEXT_SUFFIX
