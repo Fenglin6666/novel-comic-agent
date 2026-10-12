@@ -565,6 +565,10 @@
             <div class="msg assistant plan"><div class="who">📋</div>
               <div class="body"><pre>{{m.text}}</pre></div></div>
           </div>
+          <div v-else-if="m.kind==='assistant'" class="row">
+            <div class="msg assistant"><div class="who">✦</div>
+              <div class="body"><pre>{{m.text}}</pre></div></div>
+          </div>
           <div v-else-if="m.kind==='final'" class="row">
             <div class="msg assistant"><div class="who">✅</div>
               <div class="body"><pre>{{m.text}}</pre></div></div>
@@ -777,6 +781,9 @@ const IMAGE_PRESETS = {
   ark: { base_url: "https://ark.cn-beijing.volces.com/api/v3",
          model: "doubao-seedream-5-0-flash-260915" },
 };
+// agent 产出的工具消息 → 步进条状态（消费者据此推进进度）
+const TOOL_STEP = { save_script: "script", save_storyboard: "storyboard",
+  plan_layout: "layout", generate_panel: "panels", compose_page: "compose" };
 
 const app = createApp({
   data() {
@@ -871,6 +878,45 @@ const app = createApp({
       return { kind: "sys", icon, text };
     },
     // 结果行折叠进上一个工具卡（显示 ✓ 与结果摘要）；其余按消息入列
+    // 消费四种 message 事件（system/user/assistant/tool 的副本）
+    applyMsgData(d, list, onStep) {
+      const role = d.role;
+      if (role === "user") {
+        list.push({ kind: "user", text: d.content || "" });
+        return;
+      }
+      if (role === "assistant") {
+        if (d.tool_calls && d.tool_calls.length) {
+          for (const tc of d.tool_calls) {
+            list.push({ kind: "call", name: tc.function.name,
+                        args: tc.function.arguments, done: false, failed: false });
+          }
+          return;
+        }
+        list.push({ kind: "assistant", text: d.content || "" });
+        return;
+      }
+      if (role === "tool") {
+        for (let i = list.length - 1; i >= 0; i--) {
+          const c = list[i];
+          if (c.kind === "call" && !c.done) {          // 折叠进最近的待完成调用
+            c.done = true;
+            c.failed = d.ok === false;
+            c.result = d.content || "";
+            if (onStep && TOOL_STEP[c.name]) onStep(TOOL_STEP[c.name]);
+            return;
+          }
+        }
+        list.push({ kind: "result", text: (d.ok === false ? "✗ " : "") + (d.content || "") });
+        return;
+      }
+      list.push({ kind: "sys", icon: "⚙", text: d.content || "" });
+    },
+    pushArtifact(d, list) {
+      const path = d.path || "";
+      list.push(path.includes("/pages/")
+        ? { kind: "page", url: path } : { kind: "img", url: path });
+    },
     pushMsg(list, m) {
       const last = list[list.length - 1];
       if (m.kind === "result" && last && last.kind === "call" && !last.done) {
@@ -946,14 +992,30 @@ const app = createApp({
               if (live.origin === "new") this.view.sid = "";
               this.loadSessions();
             }
-            if (m.type === "log") push(this.parseLine(m.text));
+            if (m.type === "msg") {
+              this.applyMsgData(m.data, live.msgs, st => {
+                this.setLiveStep(st);
+                if (this.viewIsLive) this.scrollFeed();
+              });
+            } else if (m.type === "artifact") {
+              this.pushArtifact(m.data, live.msgs);
+              if (this.viewIsLive) this.scrollFeed();
+            } else if (m.type === "log") push(this.parseLine(m.text));
             else if (m.type === "file") {
               live.msgs.push(String(m.url).includes("/pages/")
                 ? { kind: "page", url: m.url } : { kind: "img", url: m.url });
               if (this.viewIsLive) this.scrollFeed();
             } else if (m.type === "done") {
               terminal = true;
-              push({ kind: "final", text: "✓ " + (m.answer || "（完成）") });
+              const lastMsg = live.msgs[live.msgs.length - 1];
+              const answer = "✓ " + (m.answer || "（完成）");
+              if (lastMsg && lastMsg.kind === "assistant"
+                  && lastMsg.text === (m.answer || "")) {
+                lastMsg.kind = "final"; lastMsg.text = answer;   // 收尾即最终回答，去重
+              } else {
+                push({ kind: "final", text: answer });
+              }
+              this.setLiveStep("done");
             } else if (m.type === "error") {
               terminal = true;
               push({ kind: "error", text: "✗ " + m.message });
@@ -1130,6 +1192,10 @@ const app = createApp({
         } else if (ev.type === "file") {
           msgs.push(String(ev.data).includes("/pages/")
             ? { kind: "page", url: ev.data } : { kind: "img", url: ev.data });
+        } else if (ev.type === "msg") {
+          this.applyMsgData(ev.data || {}, msgs, null);
+        } else if (ev.type === "artifact") {
+          this.pushArtifact(ev.data || {}, msgs);
         } else if (ev.type === "user") {
           msgs.push({ kind: "user", text: ev.data?.text || "" });
         } else if (ev.type === "plan") {

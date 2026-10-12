@@ -13,7 +13,7 @@ from typing import Any
 
 from novel_comic_agent.agent import Agent
 from novel_comic_agent.llm import BaseLLM
-from novel_comic_agent.schema import Function, LLMResponse, ToolCall, ToolResult
+from novel_comic_agent.schema import Function, LLMResponse, Message, ToolCall, ToolResult
 from novel_comic_agent.tools import BaseTool, ToolCollection
 
 
@@ -120,3 +120,61 @@ def test_debug_mode_echoes_full_tool_output():
     joined = "\n".join(seen)
     assert "x" * 500 in joined  # 全量返回（500 字符一个不少）
     assert '"text"' in joined and "hi" in joined  # 全量参数原文也在
+
+
+class MemorySink:
+    """会话事务日志替身：内存版，接口与 SessionLog 一致。"""
+
+    def __init__(self, preloaded: list[Message] | None = None) -> None:
+        self.items = list(preloaded or [])
+        self.appended: list[tuple[str, bool | None]] = []
+
+    def messages(self) -> list[Message]:
+        return [m.model_copy(deep=True) for m in self.items]
+
+    def append_message(self, msg: Message, ok: bool | None = None) -> None:
+        self.appended.append((msg.role.value, msg.content or "", ok))
+        self.items.append(msg)
+
+
+def _resp_text(text: str) -> LLMResponse:
+    return LLMResponse(content=text, finish_reason="stop")
+
+
+def _resp_call_tool(text: str) -> LLMResponse:
+    return LLMResponse(content=text, tool_calls=[ToolCall(
+        id="call_1", function=Function(name="echo", arguments='{"text": "hi"}'))])
+
+
+def test_agent_sink_persists_every_message_and_discards_copy():
+    """循环产出先落盘；副本随运行结束丢弃；重跑从日志加载接续。"""
+    tool = CountingEcho()
+    llm = ScriptedLLM(_resp_call_tool("我来试试"), _resp_text("hi 完成了"))
+    sink = MemorySink()
+    agent = Agent(llm, ToolCollection(tool), max_steps=6, sink=sink)
+    answer = asyncio.run(agent.run("任务"))
+    assert answer == "hi 完成了"
+    # 四种 message 里的三种按序落盘：user → assistant(tool_calls) → tool(ok=True) → assistant(final)
+    assert [(r, ok) for r, _, ok in sink.appended] == [
+        ("user", None), ("assistant", None), ("tool", True), ("assistant", None)]
+    assert sink.items[-1].content == "hi 完成了"
+    assert tool.executions == 1
+
+    # 第二轮：新的 agent 从同一个日志加载副本——上一轮对话还在，循环接着跑
+    llm2 = ScriptedLLM(_resp_text("接续完成"))
+    agent2 = Agent(llm2, ToolCollection(tool), max_steps=6, sink=sink)
+    answer2 = asyncio.run(agent2.run("继续"))
+    assert answer2 == "接续完成"
+    # 第二轮的第一次调用里能看到上一轮的 user 消息（对话连续性）
+    first_prompt_roles = [m.role.value for m in llm2.calls[0]["messages"]]
+    assert first_prompt_roles[0] == "system"
+    assert "任务" in [m.content for m in llm2.calls[0]["messages"]]
+    assert "继续" in [m.content for m in llm2.calls[0]["messages"]]
+
+
+def test_agent_without_sink_stays_in_memory():
+    """不传 sink（CLI/测试）：行为不变，消息只在内存。"""
+    llm = ScriptedLLM(_resp_text("直接回答"))
+    agent = Agent(llm, ToolCollection(CountingEcho()), max_steps=6)
+    assert asyncio.run(agent.run("任务")) == "直接回答"
+    assert agent.messages[-1].content == "直接回答"

@@ -1,15 +1,23 @@
-"""会话系统：状态机 + 事件流 + 持久化 + 崩溃恢复。
+"""会话系统：状态机 + 事务日志 + 持久化 + 崩溃恢复。
 
-参考 Codex/Claude Code 的会话模型，为一次生成建立完整档案：
-  sessions/<sid>/session.json —— 当前状态快照（临时文件 + 原子替换写入）
-  sessions/<sid>/events.jsonl —— append-only 事件流（回放 / 审计 / 恢复依据）
+一个会话一个事务日志（log.jsonl），会话产生的所有数据都先进日志再发给
+消费者——消费者（前端消息窗、agent 循环）拿到的只是事件的副本：
+
+  sessions/<sid>/log.jsonl     事务日志（append-only）：四种 message
+                               （system/user/assistant/tool）、state、plan、
+                               artifact、done/error……全部在这一个文件里
+  sessions/<sid>/session.json  派生快照（最新状态，供列表/徽章快速查询）
+  sessions/<sid>/events.jsonl  旧版事件流（只读兼容；新写入一律进 log.jsonl）
+
+事件统一带序号：{"seq", "ts", "type", "data"}。先保存到本地，再由
+消费者消费——消费者拿到的是落盘事件的副本，谁都不改写日志。
 
 状态机（一次生成的一生）：
   created → style → script → storyboard → layout → panels → compose → done
   任何状态 ─→ failed / cancelled
 
-恢复哲学：不重放模型的决策（贵且不确定），只做确定性的"按产物断点续跑"——
-storyboard 存在之后，layout / 逐格 / 合成都不需要 LLM 选工具，纯 pipeline 补完。
+恢复哲学：agent 循环每次从日志加载消息副本（不保留原件），只负责产出新
+数据；确定性部分（补格/合成）按产物断点续跑。
 """
 
 from __future__ import annotations
@@ -25,7 +33,96 @@ from typing import Any
 
 from novel_comic_agent.comic_tools import ComposePage, GeneratePanel, missing_panels  # noqa: F401 — 再导出（旧导入路径兼容）
 from novel_comic_agent.imagegen import BaseImageGen
-from novel_comic_agent.schema import ToolResult
+from novel_comic_agent.schema import Message, ToolCall, ToolResult
+
+
+class SessionLog:
+    """会话事务日志：一个会话一个 log.jsonl，append-only。
+
+    会话产生的所有数据先进日志再发给消费者——消费者拿到的只是事件的
+    副本。四种 message（system/user/assistant/tool）以 msg 事件存储
+    （与 OpenAI 线协议同构，另带 ok 标记工具成败），与 state/plan/
+    artifact/done/error 等事件同住一个文件。
+    """
+
+    def __init__(self, root: Path, sid: str) -> None:
+        self.root = Path(root)
+        self.sid = sid
+        self._seq = 0  # 惰性初始化：首次 append 时从文件行数推算
+
+    @property
+    def path(self) -> Path:
+        return Path(self.root) / self.sid / "log.jsonl"
+
+    def _next_seq(self) -> int:
+        if self._seq:
+            self._seq += 1
+            return self._seq
+        n = 0
+        if self.path.is_file():
+            with self.path.open("rb") as f:
+                n = sum(1 for _ in f)
+        self._seq = n + 1
+        return self._seq
+
+    def append(self, type_: str, data: Any) -> dict[str, Any]:
+        """先保存到本地：追加一条事件并落盘，返回落盘事件（发给消费者的副本）。"""
+        ev = {"seq": self._next_seq(), "ts": round(time.time(), 3),
+              "type": type_, "data": data}
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(ev, ensure_ascii=False) + "\n")
+            f.flush()
+        return ev
+
+    def events(self, after: int = 0) -> list[dict[str, Any]]:
+        """读取全部事件（after 之后的部分）——返回副本，改动不影响日志。"""
+        try:
+            lines = self.path.read_text("utf-8").splitlines()
+        except OSError:
+            return []
+        out: list[dict[str, Any]] = []
+        for ln in lines:
+            try:
+                ev = json.loads(ln)
+            except json.JSONDecodeError:
+                continue
+            if ev.get("seq", 0) > after:
+                out.append(ev)
+        return out
+
+    @staticmethod
+    def msg_payload(msg: Message, ok: bool | None = None) -> dict[str, Any]:
+        """Message → msg 事件的负载（与 to_wire 同构，另带工具成败标记）。"""
+        data: dict[str, Any] = msg.to_wire()
+        if msg.role.value == "tool" and ok is not None:
+            data["ok"] = ok
+        return data
+
+    def append_message(self, msg: Message, ok: bool | None = None) -> dict[str, Any]:
+        """把四种 message 之一追加进事务日志，返回落盘事件。"""
+        return self.append("msg", self.msg_payload(msg, ok=ok))
+
+    def messages(self) -> list[Message]:
+        """从日志还原 LLM 对话消息——返回副本，供 agent 循环加载使用。"""
+        out: list[Message] = []
+        for ev in self.events():
+            if ev.get("type") != "msg":
+                continue
+            d = ev.get("data") or {}
+            calls = None
+            for c in d.get("tool_calls") or []:
+                fn = c.get("function") or {}
+                calls = calls or []
+                calls.append(ToolCall(id=c.get("id") or "", type="function",
+                                      function={"name": fn.get("name") or "",
+                                               "arguments": fn.get("arguments") or "{}"}))
+            out.append(Message(role=d.get("role") or "user",
+                               content=d.get("content"),
+                               tool_calls=calls or None,
+                               tool_call_id=d.get("tool_call_id"),
+                               name=d.get("name")))
+        return out
 
 
 class SessionState(str, Enum):
@@ -138,10 +235,10 @@ class SessionStore:
         self._write_snapshot(self._dir(sid), snap)
         return snap
 
-    def set_state(self, sid: str, state: SessionState, error: str = "") -> None:
-        """状态迁移：更新快照 + 记一条 state 事件（事件流即状态机轨迹）。"""
+    def set_state(self, sid: str, state: SessionState, error: str = "") -> dict[str, Any]:
+        """状态迁移：更新快照 + 记一条 state 事件（返回落盘事件给消费者转发）。"""
         self.update(sid, state=state.value, error=error)
-        self.append_event(sid, "state", {"state": state.value, "error": error})
+        return self.append_event(sid, "state", {"state": state.value, "error": error})
 
     def get(self, sid: str) -> dict[str, Any] | None:
         """读快照；不存在返回 None。坏 JSON 不抛（崩溃现场），返回 None。"""
@@ -185,21 +282,26 @@ class SessionStore:
             out.append(snap)
         return sorted(out, key=lambda s: s.get("updated", 0), reverse=True)
 
-    def append_event(self, sid: str, type_: str, data: Any) -> None:
-        """追加一条事件（append-only；一行 JSON，写完即落盘）。
+    def append_event(self, sid: str, type_: str, data: Any) -> dict[str, Any]:
+        """把一条事件写入会话事务日志（先落盘，返回的副本交给消费者）。
 
-        Args:
-            sid: 会话 id。
-            type_: 事件类型（log/state/file/…，与 Web 的 SSE 事件对应）。
-            data: 事件负载（任意可 JSON 化内容）。
+        旧会话只有 events.jsonl：首次追加时先把旧事件整体迁移进 log.jsonl，
+        保证一个会话的完整历史始终在一个事务日志文件里。
         """
-        ev = {"ts": round(time.time(), 3), "type": type_, "data": data}
-        with (self._dir(sid) / "events.jsonl").open("a", encoding="utf-8") as f:
-            f.write(json.dumps(ev, ensure_ascii=False) + "\n")
+        log = SessionLog(self.root, sid)
+        if not log.path.exists():
+            legacy = self._dir(sid) / "events.jsonl"
+            if legacy.is_file():
+                log.path.parent.mkdir(parents=True, exist_ok=True)
+                log.path.write_bytes(legacy.read_bytes())
+        return log.append(type_, data)
 
     def events(self, sid: str, limit: int | None = None) -> list[dict[str, Any]]:
-        """回放事件流；limit 只保留最后 N 条。坏行跳过（崩溃现场可能有半行）。"""
-        f = self._dir(sid) / "events.jsonl"
+        """回放会话事务日志；新会话读 log.jsonl，老会话回退读 events.jsonl。"""
+        d = self._dir(sid)
+        f = d / "log.jsonl"
+        if not f.exists():
+            f = d / "events.jsonl"
         try:
             lines = f.read_text("utf-8").splitlines()
         except OSError:

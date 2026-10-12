@@ -63,8 +63,9 @@ from novel_comic_agent.refs import (
     save_ref,
     update_desc,
 )
+from novel_comic_agent.schema import Message
 from novel_comic_agent.session import (
-    SessionState, SessionStore, SessionTracker, resume_pipeline)
+    SessionLog, SessionState, SessionStore, SessionTracker, resume_pipeline)
 from novel_comic_agent.skills import apply_skill, choose_skill, list_skills, load_skill, save_skill
 from novel_comic_agent.tools import ToolCollection
 from novel_comic_agent.vision import describe_image
@@ -357,19 +358,69 @@ def _echo_factory(sid: str, queue: asyncio.Queue, tracker: SessionTracker | None
     return echo
 
 
+class _WebSessionLog(SessionLog):
+    """web 消费者适配：事件先落盘（继承 SessionLog），再转发给 SSE 订阅者。
+
+    agent 循环产出的四种 message 之外，工具消息还会派生两类事件
+    （同样先落盘再转发）：工具名 → 状态推进；工具结果里的成品图 → artifact。
+    """
+
+    _TOOL_STATES = {
+        "save_script": SessionState.SCRIPT,
+        "save_storyboard": SessionState.STORYBOARD,
+        "plan_layout": SessionState.LAYOUT,
+        "generate_panel": SessionState.PANELS,
+        "compose_page": SessionState.COMPOSE,
+    }
+
+    def __init__(self, root: Path, sid: str, store: SessionStore, queue: Any) -> None:
+        super().__init__(root, sid)
+        self.store = store
+        self.queue = queue
+
+    def _emit(self, ev: dict[str, Any]) -> None:
+        self.queue.put_nowait(ev)
+
+    def append(self, type_: str, data: Any) -> dict[str, Any]:
+        ev = super().append(type_, data)   # 先保存到本地
+        self._emit(ev)                     # 再发给消费者（副本）
+        return ev
+
+    def append_message(self, msg: Message, ok: bool | None = None) -> dict[str, Any]:
+        ev = super().append_message(msg, ok=ok)
+        self._emit(ev)
+        d = ev["data"]
+        if d.get("role") == "tool":
+            # 派生一：工具名 → 状态推进（state 事件由 set_state 落盘后转发）
+            step = self._TOOL_STATES.get(d.get("name") or "")
+            if step is not None:
+                self._emit(self.store.set_state(self.sid, step))
+            # 派生二：工具结果里的成品图 → artifact 事件
+            for url in _png_urls(d.get("content") or ""):
+                self._emit(self.store.append_event(
+                    self.sid, "artifact",
+                    {"path": url, "kind": "page" if "/pages/" in url else "panel"}))
+        if d.get("role") == "assistant":
+            # 剧本保存的 slug 提取自工具结果，供断点恢复沿用（原 tracker 的职责）
+            for c in d.get("tool_calls") or []:
+                if c["function"]["name"] == "save_script":
+                    m = re.search(r"slug=(\S+)", d.get("content") or "")
+                    if m:
+                        self.store.update(self.sid, slug=m.group(1))
+        return ev
+
+
 def _agent_worker(sid: str, idea: str, skill: str, on_done: Any = None):
-    """agent 流水线 worker 工厂（/api/generate 的单页路径共用）。
+    """agent 循环 worker：会话事务日志为源，循环只产出新数据（先落盘再转发）。
 
     Args:
-        on_done: agent 成功后的回调（如回填 work 骨架）；返回值替换最终 answer。
+        on_done: agent 成功后的回调（如回填 work 骨架、校验成品页）；返回值替换最终 answer。
     """
-    tracker = SessionTracker(STORE, sid)
     ref_block = refs_prompt(OUT_DIR)
     user_idea = f"{ref_block}\n\n想法：{idea}" if ref_block else idea
 
     async def worker(queue: asyncio.Queue[dict[str, Any] | None]) -> None:
-        """后台跑 agent；状态机由 tracker 驱动；结束释放忙碌闸。"""
-        echo = _echo_factory(sid, queue, tracker)
+        log = _WebSessionLog(OUT_DIR / "sessions", sid, STORE, queue)   # 根目录与 SessionStore 一致
         try:
             llm = OpenAILLM()
             style_id = skill
@@ -377,10 +428,11 @@ def _agent_worker(sid: str, idea: str, skill: str, on_done: Any = None):
                 picked = await choose_skill(user_idea, llm)
                 if picked:
                     style_id = picked["id"]
-                    echo(f"🎨 画师自选：{picked['title']}（{picked['id']}）—— {picked['reason']}")
+                    log.append("log", {"text": f"🎨 画师自选：{picked['title']}"
+                                               f"（{picked['id']}）—— {picked['reason']}"})
                 else:
                     style_id = ""
-                    echo("🎨 画师自选失败，使用默认风格指引")
+                    log.append("log", {"text": "🎨 画师自选失败，使用默认风格指引"})
             elif skill == "none":
                 style_id = ""
             system_prompt = apply_skill(COMIC_PROMPT, style_id)
@@ -398,8 +450,8 @@ def _agent_worker(sid: str, idea: str, skill: str, on_done: Any = None):
                 tools,
                 max_steps=24,
                 system_prompt=system_prompt,
-                echo=echo,
                 debug=bool(os.environ.get("MINIMUSE_DEBUG")),  # MINIMUSE_DEBUG=1 开全量回显
+                sink=log,   # 循环从日志加载消息副本，产出先落盘再转发
             )
             answer = await agent.run(user_idea)
             if on_done is not None:
@@ -653,7 +705,8 @@ async def make_plan(body: PlanRequest) -> dict[str, Any]:
                 "pages": [],
             },
         )
-    STORE.append_event(sid, "user", {"text": idea})   # 用户消息进对话存档（回放像聊天）
+    # 用户消息以四种 message 之一进对话存档（回放像聊天）
+    STORE.append_event(sid, "msg", {"role": "user", "content": idea})
     STORE.append_event(sid, "plan", plan)
     return {
         "sid": sid,

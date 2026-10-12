@@ -34,8 +34,12 @@ Rules:
 class Agent:
     """最小 agent 循环：模型提议 → 执行工具 → 结果回填 → 重复。
 
+    消息列表的生命周期：循环开始时从会话事务日志加载一份**副本**，
+    循环内每产生一条新消息都先落盘再追加进副本；运行结束副本即弃，
+    原件只存在于日志里——循环不负责保存，只负责产出。
+
     Attributes:
-        messages: 本 agent 实例的完整对话历史（含工具结果）。
+        messages: 当前这轮循环的工作副本（从日志加载，随产出增长，随运行结束丢弃）。
         _done: 成功调用缓存（"工具名:参数JSON" → 结果），重复调用直接回放。
         debug: 调试模式——回显不截断，打印工具的全量参数与全量返回。
     """
@@ -48,6 +52,7 @@ class Agent:
         system_prompt: str = SYSTEM_PROMPT,
         echo: Echo | None = None,
         debug: bool = False,
+        sink: Any = None,
     ) -> None:
         """装配一个 agent。
 
@@ -58,15 +63,24 @@ class Agent:
             system_prompt: 任务指令（每个场景一条）。
             echo: 进度回调（终端 print 或 Web 的 SSE 队列都行）。
             debug: True 时回显工具的全量参数与返回（不截断）。
+            sink: 会话事务日志（需提供 messages()/append_message()）。
+                传入时：消息先落盘再进副本，崩溃后可从日志原样恢复；
+                None：纯内存模式（测试/CLI）。
         """
         self.llm = llm
         self.tools = tools
         self.max_steps = max_steps
         self.system_prompt = system_prompt
         self.echo = echo
+        self.sink = sink
         self.messages: list[Message] = []
         self._done: dict[str, ToolResult] = {}
         self.debug = debug
+
+    def _persist(self, msg: Message, ok: bool | None = None) -> None:
+        """先保存到本地：新消息写入会话事务日志，然后才会进入工作副本。"""
+        if self.sink is not None:
+            self.sink.append_message(msg, ok=ok)
 
     def _say(self, text: str) -> None:
         """通过 echo 回调输出一行进度；未配置 echo 则静默。"""
@@ -81,14 +95,21 @@ class Agent:
         Returns:
             模型的最终文本回答；步数耗尽时是强制收尾的总结。
         """
-        self.messages.append(Message.user(user_input))
+        if self.sink is not None:
+            # 循环不保留原本的消息列表：每次都从日志加载副本接着跑
+            self.messages = self.sink.messages()
+        msg = Message.user(user_input)
+        self._persist(msg)
+        self.messages.append(msg)
         step = 0
         empty_replies = 0
         while step < self.max_steps:
             step += 1
             context = [Message.system(self.system_prompt), *self.messages]
             response = await self.llm.ask(context, tools=self.tools.to_params())
-            self.messages.append(response.to_message())
+            msg = response.to_message()
+            self._persist(msg)
+            self.messages.append(msg)
 
             # 没有工具调用：这就是最终回答
             if not response.tool_calls:
@@ -98,11 +119,11 @@ class Agent:
                 empty_replies += 1
                 if empty_replies >= 2:
                     return ""
-                self.messages.append(
-                    Message.user(
-                        "(Your reply was empty. Continue the task, or give the final answer.)"
-                    )
+                msg = Message.user(
+                    "(Your reply was empty. Continue the task, or give the final answer.)"
                 )
+                self._persist(msg)
+                self.messages.append(msg)
                 continue
 
             empty_replies = 0
@@ -139,20 +160,24 @@ class Agent:
                     # 失败结果带 ✗ 标记：前端/日志能一眼区分，不会被当成成功折叠
                     mark = "✗ " if not result.ok else ""
                     self._say(f"  ↳ {mark}{_preview(result.for_model())}")
-                self.messages.append(Message.tool_result(result.for_model(), call.id, call.name))
+                msg = Message.tool_result(result.for_model(), call.id, call.name)
+                self._persist(msg, ok=result.ok)
+                self.messages.append(msg)
                 if result.stop:
                     return await self._final_summary(result)
         else:
             # 步数预算耗尽（while 正常结束才进 else）：拿走工具，强制纯文本收尾
-            self.messages.append(
-                Message.user(
-                    "(Step budget exhausted. Summarize the progress and the answer so far "
-                    "in plain text. Do not call tools.)"
-                )
+            msg = Message.user(
+                "(Step budget exhausted. Summarize the progress and the answer so far "
+                "in plain text. Do not call tools.)"
             )
+            self._persist(msg)
+            self.messages.append(msg)
             context = [Message.system(self.system_prompt), *self.messages]
             response = await self.llm.ask(context, tools=None)
-            self.messages.append(response.to_message())
+            msg = response.to_message()
+            self._persist(msg)
+            self.messages.append(msg)
             return response.content or "(step limit reached)"
 
     async def _final_summary(self, result: ToolResult) -> str:
@@ -172,7 +197,9 @@ class Agent:
         )
         context = [Message.system(self.system_prompt), *self.messages]
         response = await self.llm.ask(context, tools=None)
-        self.messages.append(response.to_message())
+        msg = response.to_message()
+        self._persist(msg)
+        self.messages.append(msg)
         return response.content or result.output
 
 
