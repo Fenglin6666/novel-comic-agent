@@ -1152,9 +1152,13 @@ const app = createApp({
     async openSession(s) {
       this.closeSideOnMobile();
       this.view = { mode: "session", sid: s.sid };
+      // 画风回填：该会话已定的画师优先展示（规划续写时沿用）
+      if (s.plan?.skill) this.skill = s.plan.skill;
+      else if (s.work?.skill) this.skill = s.work.skill;
       if (this.live && this.live.sid === s.sid) { this.scrollFeed(true); return; }
       if (this.archive.sid === s.sid) { this.scrollFeed(true); return; }  // 已加载过
       await this.refreshArchive(s.sid);
+      this.loadRefs(s.sid);          // 参考图按会话隔离
       this.scrollFeed(true);
     },
     async refreshArchive(sid) {
@@ -1224,6 +1228,7 @@ const app = createApp({
     newChat() {
       this.view = { mode: "new", sid: "" };
       this.closeSideOnMobile();
+      this.loadRefs();                                        // 回到暂存区参考图
       if (this.live && !this.live.running) this.live = null;  // 结束的运行在侧栏会话里
     },
     closeSideOnMobile() {        // 桌面端侧栏常开；移动端选完即收抽屉

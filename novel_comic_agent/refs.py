@@ -1,13 +1,17 @@
 """角色参考图（垫图）：上传 → 清单 → 注入剧本 → 逐格垫图。
 
-目录结构（都在工作区内）：
-    refs/refs.json        清单 {角色名: {"file": "x.png", "desc": "一句话外貌"}}
-    refs/<角色名>.png     参考图（统一重存为 PNG，丢弃 EXIF 等噪音）
+参考图按会话隔离：每个会话自己的 refs 目录（sessions/<sid>/refs/），
+新对话的上传先进暂存区（comic_out/refs/），会话创建时被收编——
+A 会话的参考图不会泄漏进 B 会话。
+
+目录结构（refs_dir 内）：
+    refs.json            清单 {角色名: {"file": "x.png", "desc": "一句话外貌"}}
+    <角色名>.png         参考图（统一重存为 PNG，丢弃 EXIF 等噪音）
 
 两个作用点：
     1. save_script 前——refs_prompt() 注入"已提供这些角色，必须使用"；
     2. generate_panel 时——按该格 cast 匹配参考图，传给画师做垫图
-       （人物一致性的第二道保险，第一道是文字外貌卡）。
+       （外貌由参考图直接锁定，不靠文字描述）。
 """
 
 from __future__ import annotations
@@ -26,38 +30,32 @@ MAX_REF_SIDE = 2048  # 垫图不需要 4K；超大图等比缩小，省上传与
 _SAFE_NAME = re.compile(r"^[\w\u4e00-\u9fff][\w\u4e00-\u9fff ·-]{0,30}$")
 
 
-def refs_dir(workspace: Path) -> Path:
-    """参考图目录（workspace/refs）。"""
-    return workspace / "refs"
+def _manifest_path(refs_dir: Path) -> Path:
+    """清单文件路径（refs_dir/refs.json）。"""
+    return refs_dir / "refs.json"
 
 
-def _manifest_path(workspace: Path) -> Path:
-    """清单文件路径（workspace/refs/refs.json）。"""
-    return refs_dir(workspace) / "refs.json"
-
-
-def load_refs(workspace: Path) -> dict[str, dict[str, str]]:
+def load_refs(refs_dir: Path) -> dict[str, dict[str, str]]:
     """读参考图清单。
 
     Args:
-        workspace: 工作区。
+        refs_dir: 参考图目录（按会话隔离；暂存区为 comic_out/refs）。
     Returns:
         {角色名: {"file": 文件名, "desc": 描述}}；无清单返回空 dict。
     """
     try:
-        data = json.loads(_manifest_path(workspace).read_text("utf-8"))
+        data = json.loads(_manifest_path(refs_dir).read_text("utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
     return data if isinstance(data, dict) else {}
 
 
-def _save_manifest(workspace: Path, refs: dict[str, dict[str, str]]) -> None:
+def _save_manifest(refs_dir: Path, refs: dict[str, dict[str, str]]) -> None:
     """原子写清单（临时文件 + 替换）。"""
-    d = refs_dir(workspace)
-    d.mkdir(parents=True, exist_ok=True)
-    tmp = _manifest_path(workspace).with_suffix(".json.tmp")
+    refs_dir.mkdir(parents=True, exist_ok=True)
+    tmp = _manifest_path(refs_dir).with_suffix(".json.tmp")
     tmp.write_text(json.dumps(refs, ensure_ascii=False, indent=2), "utf-8")
-    tmp.replace(_manifest_path(workspace))
+    tmp.replace(_manifest_path(refs_dir))
 
 
 def _normalize_image(raw: bytes, out: Path) -> tuple[int, int]:
@@ -87,11 +85,11 @@ def _normalize_image(raw: bytes, out: Path) -> tuple[int, int]:
     return img.size
 
 
-def save_ref(workspace: Path, name: str, raw: bytes, desc: str = "") -> dict[str, Any]:
+def save_ref(refs_dir: Path, name: str, raw: bytes, desc: str = "") -> dict[str, Any]:
     """保存/覆盖一个角色参考图，并更新清单。
 
     Args:
-        workspace: 工作区。
+        refs_dir: 参考图目录（按会话隔离）。
         name: 角色名（中文/英文/数字，≤31 字符；即清单键，也是 cast 匹配键）。
         raw: 图片字节（jpg/png/webp…PIL 能读即可）。
         desc: 一句话外貌描述（可空；空则等视觉模型补或用户后补）。
@@ -106,38 +104,38 @@ def save_ref(workspace: Path, name: str, raw: bytes, desc: str = "") -> dict[str
     if len(raw) > MAX_REF_BYTES:
         raise ValueError(f"图片太大（上限 {MAX_REF_BYTES // 1024 // 1024}MB）")
     fname = re.sub(r"[^\w\u4e00-\u9fff-]", "_", name) + ".png"
-    w, h = _normalize_image(raw, refs_dir(workspace) / fname)
-    refs = load_refs(workspace)
+    w, h = _normalize_image(raw, refs_dir / fname)
+    refs = load_refs(refs_dir)
     refs[name] = {"file": fname, "desc": (desc or "").strip()}
-    _save_manifest(workspace, refs)
+    _save_manifest(refs_dir, refs)
     return {"name": name, "file": fname, "desc": refs[name]["desc"], "width": w, "height": h}
 
 
-def update_desc(workspace: Path, name: str, desc: str) -> None:
+def update_desc(refs_dir: Path, name: str, desc: str) -> None:
     """只改描述（视觉模型自动补描述后回填用）。"""
-    refs = load_refs(workspace)
+    refs = load_refs(refs_dir)
     if name in refs:
         refs[name]["desc"] = desc.strip()
-        _save_manifest(workspace, refs)
+        _save_manifest(refs_dir, refs)
 
 
-def delete_ref(workspace: Path, name: str) -> bool:
+def delete_ref(refs_dir: Path, name: str) -> bool:
     """删除一个参考图（清单 + 文件）。返回是否存在过。"""
-    refs = load_refs(workspace)
+    refs = load_refs(refs_dir)
     entry = refs.pop(name, None)
     if entry is None:
         return False
-    _save_manifest(workspace, refs)
-    f = refs_dir(workspace) / entry["file"]
+    _save_manifest(refs_dir, refs)
+    f = refs_dir / entry["file"]
     if f.is_file():
         f.unlink()
     return True
 
 
-def ref_names_for(workspace: Path, cast: list[str]) -> list[str]:
+def ref_names_for(refs_dir: Path, cast: list[str]) -> list[str]:
     """cast 里有参考图的角色名（保持顺序、去重）——他们的外貌由参考图锁定，
     提示词里不应再用文字描写（文字与参考图打架时，模型会偏离参考图）。"""
-    refs = load_refs(workspace)
+    refs = load_refs(refs_dir)
     out: list[str] = []
     for name in cast:
         name = (name or "").strip()
@@ -147,34 +145,34 @@ def ref_names_for(workspace: Path, cast: list[str]) -> list[str]:
     return out
 
 
-def ref_files_for(workspace: Path, cast: list[str]) -> list[Path]:
+def ref_files_for(refs_dir: Path, cast: list[str]) -> list[Path]:
     """按这一格的 cast 匹配参考图文件（名字精确匹配；同名去重）。
 
     Args:
-        workspace: 工作区。
+        refs_dir: 参考图目录。
         cast: 该格出场角色名列表。
     Returns:
         命中的参考图路径列表（最多 4 张——再多画师也吃不下）。
     """
-    refs = load_refs(workspace)
+    refs = load_refs(refs_dir)
     out: list[Path] = []
     for name in cast:
         entry = refs.get(name) or refs.get(name.strip())
         if not entry:
             continue
-        f = refs_dir(workspace) / entry["file"]
+        f = refs_dir / entry["file"]
         if f.is_file() and f not in out:
             out.append(f)
     return out[:4]
 
 
-def refs_prompt(workspace: Path) -> str:
+def refs_prompt(refs_dir: Path) -> str:
     """把参考图清单变成注入给 save_script 的指令块。
 
     Returns:
         指令块文本；无参考图时为空串（零成本）。
     """
-    refs = load_refs(workspace)
+    refs = load_refs(refs_dir)
     if not refs:
         return ""
     lines = ["【已上传角色参考图】以下角色必须在剧本中出现，characters 必须包含同名角色，"

@@ -644,6 +644,8 @@ class GeneratePanel(BaseTool):
     workspace: Path
     imagegen: BaseImageGen
     panel_sizes: dict[str, str] = PANEL_SIZES  # 按画师选表：size_map_for(imagegen.model)
+    # 参考图目录：按会话隔离（sessions/<sid>/refs）；None 回落 workspace/refs（CLI）
+    refs_dir: Path | None = None
 
     async def execute(self, storyboard: str = "", panel: int = 0, **_: Any) -> ToolResult:
         """为某一格生成图片，写 panels/<slug>_pNN.png。
@@ -676,8 +678,9 @@ class GeneratePanel(BaseTool):
             return ToolResult.fail(f"panel {panel!r} not found in '{slug}'; available panels: {ns}")
 
         chars = {c["name"]: c["look"] for c in data.get("characters", [])}
-        ref_names = ref_names_for(self.workspace, target.get("cast", []))
-        refs = ref_files_for(self.workspace, target.get("cast", []))
+        rdir = self.refs_dir or (self.workspace / "refs")
+        ref_names = ref_names_for(rdir, target.get("cast", []))
+        refs = ref_files_for(rdir, target.get("cast", []))
         # 有参考图的角色：外貌完全由参考图锁定，文字外貌卡反而会把模型带偏——不拼。
         looks = "; ".join(
             f"{name}: {chars[name]}" for name in target.get("cast", [])

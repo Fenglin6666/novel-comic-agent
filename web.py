@@ -23,6 +23,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -58,7 +59,6 @@ from novel_comic_agent.refs import (
     decode_data_url,
     delete_ref,
     load_refs,
-    refs_dir,
     refs_prompt,
     save_ref,
     update_desc,
@@ -81,6 +81,7 @@ app = FastAPI(title="novel-comic-agent")
 app.mount("/files", StaticFiles(directory=OUT_DIR), name="files")
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")  # 前端静态资源（本地 vue 等）
 
+SESSIONS_DIR = OUT_DIR / "sessions"
 _busy = False  # 生图花钱，一次只允许跑一个；FastAPI 单事件循环，同步检查无竞态
 _WIN_PNG = re.compile(r"[A-Za-z]:\\[^\s]+?\.png")
 
@@ -151,11 +152,15 @@ def upload_skill(body: SkillUpload) -> dict[str, str]:
 
 
 @app.get("/api/refs")
-def get_refs() -> list[dict[str, str]]:
-    """列出已上传的角色参考图（file 是落盘文件名，与角色名可能不同）。"""
+def get_refs(sid: str = "") -> list[dict[str, str]]:
+    """列出参考图（file 是落盘文件名，与角色名可能不同）。
+
+    Args:
+        sid: 会话 id——给出则列该会话私有的参考图；缺省列暂存区（新对话用）。
+    """
     return [
         {"name": n, "file": e.get("file", ""), "desc": e.get("desc", "")}
-        for n, e in load_refs(OUT_DIR).items()
+        for n, e in load_refs(_refs_dir(sid or None)).items()
     ]
 
 
@@ -165,28 +170,30 @@ class RefUpload(BaseModel):
     name: str
     image: str  # data:image/...;base64,...
     desc: str = ""  # 可空：留空则尝试视觉模型自动补
+    sid: str = ""  # 会话 id：给出则存为该会话私有；缺省进暂存区
 
 
 @app.post("/api/refs")
 async def upload_ref(body: RefUpload) -> dict[str, Any]:
     """保存角色参考图；描述留空时用视觉模型（如配置）自动生成一句话外貌卡。"""
+    rdir = _refs_dir(body.sid or None)
     try:
         raw = decode_data_url(body.image)
-        entry = save_ref(OUT_DIR, body.name, raw, body.desc)
+        entry = save_ref(rdir, body.name, raw, body.desc)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not entry["desc"]:
-        desc = await describe_image(refs_dir(OUT_DIR) / entry["file"])
+        desc = await describe_image(rdir / entry["file"])
         if desc:
-            update_desc(OUT_DIR, entry["name"], desc)
+            update_desc(rdir, entry["name"], desc)
             entry["desc"] = desc
     return entry
 
 
 @app.delete("/api/refs/{name}")
-def remove_ref(name: str) -> dict[str, bool]:
-    """删除一个角色参考图。"""
-    return {"deleted": delete_ref(OUT_DIR, name)}
+def remove_ref(name: str, sid: str = "") -> dict[str, bool]:
+    """删除一个角色参考图（按 sid 作用域）。"""
+    return {"deleted": delete_ref(_refs_dir(sid or None), name)}
 
 
 # ---------------------------------------------------------------- 作品列表
@@ -343,6 +350,15 @@ def _sse(worker: Any) -> StreamingResponse:
     return StreamingResponse(stream(), media_type="text/event-stream")
 
 
+def _refs_dir(sid: str | None) -> Path:
+    """参考图目录：有 sid → 该会话私有；无 sid → 暂存区（新会话创建时收编）。"""
+    if sid:
+        d = SESSIONS_DIR / sid / "refs"
+        if d.parent.is_dir():
+            return d
+    return OUT_DIR / "refs"
+
+
 def _echo_factory(sid: str, queue: asyncio.Queue, tracker: SessionTracker | None = None):
     """echo 双写工厂：SSE 队列 + 会话事件流（+ 可选的状态机追踪）+ 图片链接事件。"""
 
@@ -442,7 +458,8 @@ def _agent_worker(sid: str, idea: str, skill: str, on_done: Any = None):
                 SaveScript(workspace=OUT_DIR),
                 SaveStoryboard(workspace=OUT_DIR),
                 PlanLayout(workspace=OUT_DIR, panel_sizes=sizes),
-                GeneratePanel(workspace=OUT_DIR, imagegen=imagegen, panel_sizes=sizes),
+                GeneratePanel(workspace=OUT_DIR, imagegen=imagegen, panel_sizes=sizes,
+                              refs_dir=_refs_dir(sid)),
                 ComposePage(workspace=OUT_DIR),
             )
             agent = Agent(
@@ -567,6 +584,7 @@ async def _generate_planned(
          f"（本次 {len(run_beats)} 页，每页约 30-60 秒/格）")
 
     digest_prefix = "；".join(f"第{p['n']}页：{p.get('beat', '')}" for p in pages[-10:])
+    refs_dir = _refs_dir(sid)
     llm = OpenAILLM()
     imagegen = OpenAIImageGen()
     sizes = size_map_for(imagegen.model)
@@ -590,8 +608,9 @@ async def _generate_planned(
         script=script_data,
         digest_prefix=digest_prefix,
         cast_map=plan.get("cast_map") or [],
-        ref_names=ref_names_for(OUT_DIR,
+        ref_names=ref_names_for(refs_dir,
                                 [c["name"] for c in script_data.get("characters", [])]),
+        refs_dir=refs_dir,
         llm=llm,
         imagegen=imagegen,
         panel_sizes=sizes,
@@ -666,7 +685,7 @@ async def make_plan(body: PlanRequest) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="no such session")
 
     ctx = session_context(snap, OUT_DIR) if snap else None
-    ref_block = refs_prompt(OUT_DIR)
+    ref_block = refs_prompt(_refs_dir(body.sid or None))
     plan_idea = f"{ref_block}\n\n用户输入：\n{idea}" if ref_block else idea
     try:
         plan = await build_plan(plan_idea, OpenAILLM(), session_ctx=ctx)
@@ -692,6 +711,10 @@ async def make_plan(body: PlanRequest) -> dict[str, Any]:
         fresh = STORE.create(idea[:80], plan.get("skill", ""))
         sid = fresh["sid"]
         pages_before = 0
+        # 收编暂存区参考图：新对话里上传的参考图归这个会话所有
+        staging = OUT_DIR / "refs"
+        if staging.is_dir() and any(staging.iterdir()):
+            shutil.move(str(staging), str(SESSIONS_DIR / sid / "refs"))
         STORE.update(
             sid,
             plan=plan,

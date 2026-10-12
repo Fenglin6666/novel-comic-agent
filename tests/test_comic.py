@@ -370,7 +370,8 @@ def test_generate_panel_ref_characters_lock_to_reference(tmp_path: Path):
 
     buf = io.BytesIO()
     PILImage.new("RGB", (64, 64), (120, 80, 40)).save(buf, "PNG")
-    save_ref(tmp_path, "奶娃", buf.getvalue(), "")
+    refs_dir = tmp_path / "refs"
+    save_ref(refs_dir, "奶娃", buf.getvalue(), "")
 
     panels = [
         {"n": 1, "cast": ["奶娃", "阿一"], "prompt": "两人在雪地",
@@ -381,8 +382,8 @@ def test_generate_panel_ref_characters_lock_to_reference(tmp_path: Path):
                                                    panels=panels))
     run(PlanLayout(workspace=tmp_path, panel_sizes=PANEL_SIZES).execute(storyboard=slug))
     fake = FlatImageGen()
-    run(GeneratePanel(workspace=tmp_path, imagegen=fake,
-                      panel_sizes=PANEL_SIZES).execute(storyboard=slug, panel=1))
+    run(GeneratePanel(workspace=tmp_path, imagegen=fake, panel_sizes=PANEL_SIZES,
+                      refs_dir=refs_dir).execute(storyboard=slug, panel=1))
 
     prompt = fake.calls[0]["prompt"]
     assert fake.calls[0]["refs"] == 1                      # 垫图传入

@@ -185,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
 
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
-    ref_block = refs_prompt(out)
+    ref_block = refs_prompt(out / "refs")
     if ref_block:  # 有参考图角色：注入剧本第一步，强制使用这些角色
         idea = f"{ref_block}\n\n想法：{idea}"
     answer, code = asyncio.run(_run())

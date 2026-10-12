@@ -174,6 +174,7 @@ async def generate_pages(
     panel_sizes: dict[str, str],
     cast_map: list[dict[str, str]] | None = None,
     ref_names: list[str] | None = None,
+    refs_dir: Path | None = None,
     echo: Any = None,
     on_page: Any = None,
 ) -> tuple[bool, str, int]:
@@ -187,6 +188,7 @@ async def generate_pages(
         script: 剧本数据（title/style/characters/synopsis）。
         digest_prefix: 本批之前的前情（已完成页的拍点摘要）。
         cast_map: 原文角色 → 参考图角色的替换映射（逐页透传给编剧）。
+        refs_dir: 该会话的参考图目录（垫图按会话隔离）。
         echo: 进度回调（接 SSE 队列）。
         on_page: 每页完成回调 (page_no, slug, beat, skipped)。
     Returns:
@@ -198,7 +200,8 @@ async def generate_pages(
             echo(text)
 
     planner = PlanLayout(workspace=workspace, panel_sizes=panel_sizes)
-    gen = GeneratePanel(workspace=workspace, imagegen=imagegen, panel_sizes=panel_sizes)
+    gen = GeneratePanel(workspace=workspace, imagegen=imagegen, panel_sizes=panel_sizes,
+                        refs_dir=refs_dir)
     composer = ComposePage(workspace=workspace)
     done = 0
     for i, item in enumerate(beats):
