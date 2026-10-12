@@ -5,7 +5,8 @@
   （新对话消息流 / 历史会话回放 / 作品页，三视图切换）。
   实时生成与历史会话回放（events.jsonl）走同一套消息渲染管线；
   生成在后台独立缓冲（切去别的页面不会中断烧钱的任务）。
-  与后端接口：GET /api/run（fetch 流式 SSE）、GET /api/sessions[/{sid}][/resume]、
+  与后端接口：POST /api/plan、GET /api/generate?sid=（fetch 流式 SSE）、
+  GET /api/sessions/{sid}/resume、
         /api/refs、/api/skills、/api/works、/static/*、/files/*。
 -->
 <html lang="zh" data-theme="dark">

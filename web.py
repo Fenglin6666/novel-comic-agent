@@ -7,7 +7,6 @@ r"""novel-comic-agent 的 Web 界面。
   GET  /                          单页界面（web/index.html）
   POST /api/plan                  规划：页数/角色/拍点/画师 + 预估花费（不烧图）
   GET  /api/generate?sid=         按已确认的规划生成本次全部页（SSE；页幂等可续）
-  GET  /api/run?idea=             旧的一次性直通生成（SSE；前端已改走 plan→generate）
   GET/POST /api/config            模型配置：文本/生图的密钥、端点、模型名（密钥只回尾号）
   GET  /api/works                 历史作品（comic_out/pages）
   /files/*                        comic_out 静态文件
@@ -64,7 +63,8 @@ from novel_comic_agent.refs import (
     save_ref,
     update_desc,
 )
-from novel_comic_agent.session import SessionState, SessionStore, SessionTracker, resume_pipeline
+from novel_comic_agent.session import (
+    SessionState, SessionStore, SessionTracker, resume_pipeline)
 from novel_comic_agent.skills import apply_skill, choose_skill, list_skills, load_skill, save_skill
 from novel_comic_agent.tools import ToolCollection
 from novel_comic_agent.vision import describe_image
@@ -358,7 +358,7 @@ def _echo_factory(sid: str, queue: asyncio.Queue, tracker: SessionTracker | None
 
 
 def _agent_worker(sid: str, idea: str, skill: str, on_done: Any = None):
-    """agent 流水线 worker 工厂（/api/run 与 /api/generate 的单页路径共用）。
+    """agent 流水线 worker 工厂（/api/generate 的单页路径共用）。
 
     Args:
         on_done: agent 成功后的回调（如回填 work 骨架）；返回值替换最终 answer。
@@ -737,33 +737,6 @@ async def generate(sid: str):
     return _sse(_planned_worker(sid, plan, idea))
 
 
-@app.get("/api/run")
-async def run(idea: str, skill: str = ""):
-    """旧的一次性直通生成（前端已改走 plan → 确认 → generate；此入口保留兼容）。
-
-    Args:
-        idea: 用户的想法（query 参数）。
-        skill: 画师 skill id；""=模型自选（auto）；"none"=不启用；其余为显式指定。
-    Returns:
-        text/event-stream：log / file / done / error 四种 JSON 事件（含 sid）。
-    Raises:
-        HTTPException: 400 想法为空或画师 id 非法；409 已有任务在跑。
-    """
-    idea = (idea or "").strip()
-    if not idea:
-        raise HTTPException(status_code=400, detail="idea is empty")
-    if skill and skill != "none" and load_skill(skill) is None:
-        available = ", ".join(s["id"] for s in list_skills())
-        raise HTTPException(status_code=400, detail=f"unknown skill; available: {available}")
-    global _busy
-    if _busy:
-        raise HTTPException(status_code=409, detail="another comic is already generating")
-    _busy = True
-
-    snap = STORE.create(idea, skill)
-    return _sse(_agent_worker(snap["sid"], idea, skill))
-
-
 def _short_resume_worker(sid: str, slug: str, on_done: Any = None):
     """单页确定性恢复 worker：plan_layout → 补缺格 → 重合成（不经过 agent/LLM）。"""
 
@@ -806,7 +779,7 @@ async def resume_session(sid: str):
     """从产物断点续跑一个会话（补缺格 → 重合成；不经过 LLM）。
 
     Returns:
-        text/event-stream：与 /api/run 相同的事件类型。
+        text/event-stream：与 /api/generate 相同的事件类型。
     Raises:
         HTTPException: 404 会话/分镜不存在；409 已有任务在跑。
     """
